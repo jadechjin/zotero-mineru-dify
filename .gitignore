@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.manifest
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+*.tar.gz
+*.whl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+
+# Claude Code
+.claude/
+
+# Playwright
+.playwright/
+.playwright-mcp/
+
+# Project runtime state
+progress.json
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Byte-compiled / optimized
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy / pytest
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
