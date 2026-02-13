@@ -243,7 +243,7 @@ def main():
         dataset_doc_form,
     )
     if dataset_runtime_mode == RAG_PIPELINE_MODE:
-        logger.info("检测到 rag_pipeline 知识库：按你的要求仅上传内存中的 Markdown。")
+        logger.info("检测到 rag_pipeline 知识库，开始解析上传任务。")
 
     progress = load_progress()
     conflict_count = _clean_conflict_processed_records(progress, dataset_id)
@@ -318,10 +318,10 @@ def main():
     save_progress(progress)
 
     logger.info("=" * 50)
-    logger.info("流水线执行完成。")
+    logger.info("流水线执行完成，上传失败的文件可重新尝试")
     logger.info("  解析成功: %d  |  解析失败: %d", len(md_results), len(md_failures))
     logger.info("  上传成功: %d  |  上传失败: %d", len(uploaded_keys), len(upload_failures))
-    logger.info("  累计已处理: %d", len(progress["processed"]))
+    logger.info("  库中累计已处理: %d", len(progress["processed"]))
 
 
 if __name__ == "__main__":

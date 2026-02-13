@@ -28,6 +28,7 @@ from config import (
     DIFY_SUBCHUNK_MAX_TOKENS,
     DIFY_SUBCHUNK_OVERLAP,
     DIFY_SUBCHUNK_SEPARATOR,
+    DIFY_INDEX_MAX_WAIT,
     DIFY_UPLOAD_DELAY,
     POLL_INTERVAL_DIFY,
 )
@@ -474,21 +475,28 @@ def upload_document(dataset_id, item_key, file_name, md_text, doc_form="", runti
         return None
 
 
-def wait_for_indexing(dataset_id, batch, max_wait=600):
+def wait_for_indexing(dataset_id, batch, max_wait=None):
     """轮询 Dify 索引状态，直到完成/失败/超时。"""
     if not batch:
         return False
 
+    if max_wait is None or max_wait <= 0:
+        max_wait = DIFY_INDEX_MAX_WAIT
+
+    def _fetch_docs():
+        resp = requests.get(
+            f"{DIFY_BASE_URL}/datasets/{dataset_id}/documents/{batch}/indexing-status",
+            headers=_headers(content_type=None),
+            timeout=30,
+        )
+        resp.raise_for_status()
+        docs = resp.json().get("data", [])
+        return docs if isinstance(docs, list) else []
+
     start = time.time()
     while time.time() - start < max_wait:
         try:
-            resp = requests.get(
-                f"{DIFY_BASE_URL}/datasets/{dataset_id}/documents/{batch}/indexing-status",
-                headers=_headers(content_type=None),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            docs = resp.json().get("data", [])
+            docs = _fetch_docs()
             if not docs:
                 time.sleep(POLL_INTERVAL_DIFY)
                 continue
@@ -509,7 +517,23 @@ def wait_for_indexing(dataset_id, batch, max_wait=600):
 
         time.sleep(POLL_INTERVAL_DIFY)
 
-    logger.warning("索引超时，batch=%s", batch)
+    logger.warning(
+        "索引超时，batch=%s，已等待 %ss（可通过 DIFY_INDEX_MAX_WAIT 调整）",
+        batch,
+        max_wait,
+    )
+
+    # 超时后做一次最终复查，避免“刚完成就被判失败”。
+    try:
+        docs = _fetch_docs()
+        if docs and all(d.get("indexing_status") == "completed" for d in docs):
+            total_segments = sum(int(d.get("total_segments") or 0) for d in docs)
+            if total_segments > 0:
+                logger.warning("超时后复查发现已完成，batch=%s，segments=%d", batch, total_segments)
+                return True
+    except Exception as exc:
+        logger.warning("索引超时后复查失败: %s", exc)
+
     return False
 
 
@@ -553,7 +577,11 @@ def upload_all(dataset_id, md_results, dataset_info=None):
         time.sleep(DIFY_UPLOAD_DELAY)
 
     logger.info("Dify submit: %d 接受, %d 拒绝", len(pending_batches), len(failed))
-    logger.info("等待 %d 个批次完成索引...", len(pending_batches))
+    logger.info(
+        "等待 %d 个批次完成索引（单批最大等待 %ss）...",
+        len(pending_batches),
+        DIFY_INDEX_MAX_WAIT,
+    )
 
     for item_key, batch in pending_batches.items():
         if wait_for_indexing(dataset_id, batch):
