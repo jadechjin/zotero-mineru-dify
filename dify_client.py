@@ -221,7 +221,7 @@ def _load_pipeline_rule_overrides():
 
     _PIPELINE_RULE_CACHE = {}
     if yaml is None:
-        logger.warning("未安装 PyYAML，无法解析 .pipeline 文件，将回退到 .env 参数。")
+        logger.warning("未安装 PyYAML，无法解析 .pipeline 文件，将回退到 .env 参数。如需使用 pipeline 文件一键配置 dify 参数。可将 pipeline 文件放在脚本目录、Downloads 。")
         return _PIPELINE_RULE_CACHE
 
     pipeline_path = _discover_pipeline_file()
