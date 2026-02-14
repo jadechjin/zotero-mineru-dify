@@ -34,11 +34,38 @@
 | MinerU API Token | - | 在 [mineru.net](https://mineru.net) 注册获取 |
 | Dify API Key | - | 从 Dify 实例获取 Dataset API Key |
 
-## 快速开始
+## 使用教程
+
+首先确保电脑中已经下载安装有：Python 3.8+、zotero（需要安装 [zotero-mcp](https://github.com/nicholasgasior/zotero-mcp)）
+
+### 准备工作——Dify
+
+在 Dify 中注册申请一个账号（建议订阅 pro，否则免费版只能上传 50 篇文献且限制库容量为 50MB），在设置中填写好自己的模型，推荐模型配置：
+![image-20260214165530836](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214165530836.png)
+
+随后创建 Dify 知识库，创建一个带有父子模式的知识库模板的流水线，可按需要选择删除不必要的节点。最简示例：
+
+![image-20260214170301138](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214170301138.png)
+
+找到用户输入字段点击预览，必填的处理文档参数如下：
+
+![image-20260214170525878](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214170525878.png)
+
+然后填写知识库节点的参数，使用高质量索引，嵌入模型推荐选择 Qwen3-Embedding-8B。检索选择混合检索，重排模型推荐使用 Qwen3-Reranker-8B，Top K 和 score 可按需自行配置，配置完成后点击发布流水线，选择导出流水线 pipeline 文件到本地项目目录下。
+
+最后点击服务 API--选择 API 密钥--创建一个新的密钥--复制密钥备用
+
+### 准备工作——MinerU
+
+注册登录使用 [MinerU](https://mineru.net/) 服务--选择 API--点击 API 管理--创建一个新的 token--复制 token 备用
+
+### 开始项目
+
+打开终端，一行行执行以下命令：
 
 ```bash
 # 克隆仓库
-git clone https://github.com/<your-username>/zotero-mineru-dify.git
+git clone https://github.com/jadechjin/zotero-mineru-dify.git
 cd zotero-mineru-dify
 
 # 创建虚拟环境
@@ -51,13 +78,13 @@ pip install -r requirements.txt
 
 # 配置环境变量
 cp .env.example .env
-# 编辑 .env 文件，填入你的 API 密钥和偏好设置
+# 此时找到本地的.env 文件打开，编辑 .env 文件，填入你刚刚申请的 MinerU 和 Dify 的 API 密钥和偏好设置，Dify 的知识库配置如果在准备阶段下载了 pipeline 文件就不用填写，程序会自动识别然后应用配置
 
 # 运行流水线
 python pipeline.py
 ```
 
-## 使用方法
+# 使用方法
 
 ```bash
 # 交互模式 - 从菜单选择分类

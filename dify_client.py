@@ -321,7 +321,7 @@ def get_or_create_dataset():
 
     raise RuntimeError(
         f"未找到配置知识库 DIFY_DATASET_NAME={DIFY_DATASET_NAME}。"
-        "按你的配置，程序不会自动新建知识库，请先在 Dify 创建后再运行。"
+        "检查 dify 中的数据库是否与项目中的一致。"
     )
 
 
@@ -493,6 +493,33 @@ def wait_for_indexing(dataset_id, batch, max_wait=None):
         docs = resp.json().get("data", [])
         return docs if isinstance(docs, list) else []
 
+    def _doc_error_text(doc):
+        err = doc.get("error")
+        if err in (None, "", {}, []):
+            return ""
+        if isinstance(err, str):
+            return err.strip()
+        return str(err).strip()
+
+    def _validate_completed_docs(docs):
+        for d in docs:
+            doc_id = d.get("id", "unknown")
+            err_text = _doc_error_text(d)
+            if err_text:
+                return False, f"doc={doc_id} error={err_text}"
+
+            total_segments = int(d.get("total_segments") or 0)
+            completed_segments = int(d.get("completed_segments") or 0)
+            if total_segments <= 0:
+                return False, f"doc={doc_id} total_segments={total_segments}"
+            if completed_segments < total_segments:
+                return (
+                    False,
+                    f"doc={doc_id} completed_segments={completed_segments} total_segments={total_segments}",
+                )
+
+        return True, ""
+
     start = time.time()
     while time.time() - start < max_wait:
         try:
@@ -506,9 +533,9 @@ def wait_for_indexing(dataset_id, batch, max_wait=None):
                 return False
 
             if all(d.get("indexing_status") == "completed" for d in docs):
-                total_segments = sum(int(d.get("total_segments") or 0) for d in docs)
-                if total_segments <= 0:
-                    logger.error("索引完成但分块数为 0，batch=%s", batch)
+                ok, reason = _validate_completed_docs(docs)
+                if not ok:
+                    logger.error("索引完成但存在异常，batch=%s，%s", batch, reason)
                     return False
                 return True
 
@@ -527,10 +554,12 @@ def wait_for_indexing(dataset_id, batch, max_wait=None):
     try:
         docs = _fetch_docs()
         if docs and all(d.get("indexing_status") == "completed" for d in docs):
-            total_segments = sum(int(d.get("total_segments") or 0) for d in docs)
-            if total_segments > 0:
+            ok, reason = _validate_completed_docs(docs)
+            if ok:
+                total_segments = sum(int(d.get("total_segments") or 0) for d in docs)
                 logger.warning("超时后复查发现已完成，batch=%s，segments=%d", batch, total_segments)
                 return True
+            logger.error("索引超时后复查仍异常，batch=%s，%s", batch, reason)
     except Exception as exc:
         logger.warning("索引超时后复查失败: %s", exc)
 
