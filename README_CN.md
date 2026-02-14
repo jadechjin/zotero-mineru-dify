@@ -41,15 +41,15 @@
 ### 准备工作——Dify
 
 在 Dify 中注册申请一个账号（建议订阅 pro，否则免费版只能上传 50 篇文献且限制库容量为 50MB），在设置中填写好自己的模型，推荐模型配置：
-![image-20260214165530836](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214165530836.png)
+![image-20260214165530836](images/165500.png)
 
 随后创建 Dify 知识库，创建一个带有父子模式的知识库模板的流水线，可按需要选择删除不必要的节点。最简示例：
 
-![image-20260214170301138](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214170301138.png)
+![image-20260214170301138](images/170258.png)
 
 找到用户输入字段点击预览，必填的处理文档参数如下：
 
-![image-20260214170525878](C:\Users\17162\AppData\Roaming\Typora\typora-user-images\image-20260214170525878.png)
+![image-20260214170525878](images/170446.png)
 
 然后填写知识库节点的参数，使用高质量索引，嵌入模型推荐选择 Qwen3-Embedding-8B。检索选择混合检索，重排模型推荐使用 Qwen3-Reranker-8B，Top K 和 score 可按需自行配置，配置完成后点击发布流水线，选择导出流水线 pipeline 文件到本地项目目录下。
 
