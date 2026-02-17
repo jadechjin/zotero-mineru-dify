@@ -5,15 +5,16 @@ from collections import deque
 
 import requests
 
-from config import SUPPORTED_FORMATS, ZOTERO_MCP_URL
 from progress import is_processed
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_FORMATS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg"}
+
 MAX_PAGES_GUARD = 500  # 防止分页死循环
 
 
-def _mcp_call(method, params=None):
+def _mcp_call(method, mcp_url, params=None):
     """Send a JSON-RPC call to the Zotero MCP server."""
     payload = {
         "jsonrpc": "2.0",
@@ -23,7 +24,7 @@ def _mcp_call(method, params=None):
     if params is not None:
         payload["params"] = params
 
-    resp = requests.post(ZOTERO_MCP_URL, json=payload, timeout=30)
+    resp = requests.post(mcp_url, json=payload, timeout=30)
     resp.raise_for_status()
     body = resp.json()
 
@@ -58,11 +59,12 @@ def _parse_mcp_content(result):
     return parsed
 
 
-def check_connection():
+def check_connection(cfg):
     """Verify the Zotero MCP server is reachable."""
+    mcp_url = cfg["zotero"]["mcp_url"]
     try:
         resp = requests.post(
-            ZOTERO_MCP_URL,
+            mcp_url,
             json={"jsonrpc": "2.0", "id": 0, "method": "tools/list"},
             timeout=5,
         )
@@ -85,14 +87,16 @@ def _extract_list_payload(data, candidate_keys=("results", "items", "collections
     return []
 
 
-def list_collections(mode="standard", page_size=100):
+def list_collections(cfg, mode="standard", page_size=100):
     """Fetch all collections from Zotero, handling pagination."""
+    mcp_url = cfg["zotero"]["mcp_url"]
     all_collections = []
     offset = 0
     page_size = max(1, page_size)
     for _ in range(MAX_PAGES_GUARD):
         result = _mcp_call(
             "tools/call",
+            mcp_url,
             {"name": "get_collections", "arguments": {"mode": mode, "limit": page_size, "offset": offset}},
         )
         data = _parse_mcp_content(result)
@@ -108,7 +112,7 @@ def list_collections(mode="standard", page_size=100):
     return all_collections
 
 
-def get_subcollections_list(collection_key, page_size=100):
+def get_subcollections_list(mcp_url, collection_key, page_size=100):
     """Fetch direct subcollections of a given collection."""
     all_subs = []
     offset = 0
@@ -116,6 +120,7 @@ def get_subcollections_list(collection_key, page_size=100):
     for _ in range(MAX_PAGES_GUARD):
         result = _mcp_call(
             "tools/call",
+            mcp_url,
             {"name": "get_subcollections", "arguments": {"collectionKey": collection_key, "limit": page_size, "offset": offset}},
         )
         data = _parse_mcp_content(result)
@@ -131,7 +136,7 @@ def get_subcollections_list(collection_key, page_size=100):
     return all_subs
 
 
-def expand_collection_scope(collection_keys, recursive=True):
+def expand_collection_scope(mcp_url, collection_keys, recursive=True):
     """Expand collection keys to include all descendant collections via BFS.
 
     Returns deduplicated list of collection keys.
@@ -144,7 +149,7 @@ def expand_collection_scope(collection_keys, recursive=True):
     while queue:
         current = queue.popleft()
         try:
-            subs = get_subcollections_list(current)
+            subs = get_subcollections_list(mcp_url, current)
         except Exception as exc:
             logger.warning("获取子分组失败：%s，错误=%s", current, exc)
             continue
@@ -156,7 +161,7 @@ def expand_collection_scope(collection_keys, recursive=True):
     return list(effective)
 
 
-def iter_collection_items(collection_key, page_size=50):
+def iter_collection_items(mcp_url, collection_key, page_size=50):
     """Paginate through all items in a collection."""
     all_items = []
     offset = 0
@@ -164,6 +169,7 @@ def iter_collection_items(collection_key, page_size=50):
     for _ in range(MAX_PAGES_GUARD):
         result = _mcp_call(
             "tools/call",
+            mcp_url,
             {"name": "get_collection_items", "arguments": {"collectionKey": collection_key, "limit": page_size, "offset": offset}},
         )
         data = _parse_mcp_content(result)
@@ -179,12 +185,12 @@ def iter_collection_items(collection_key, page_size=50):
     return all_items
 
 
-def collect_items_by_collections(collection_keys, recursive=True, page_size=50):
+def collect_items_by_collections(mcp_url, collection_keys, recursive=True, page_size=50):
     """Collect deduplicated items from one or more collections.
 
     Returns list of item dicts, deduplicated by item key.
     """
-    effective_keys = expand_collection_scope(collection_keys, recursive=recursive)
+    effective_keys = expand_collection_scope(mcp_url, collection_keys, recursive=recursive)
     logger.info(
         "分组展开：输入 %d 个，展开后 %d 个（recursive=%s）",
         len(collection_keys), len(effective_keys), recursive,
@@ -194,7 +200,7 @@ def collect_items_by_collections(collection_keys, recursive=True, page_size=50):
     all_items = []
     for coll_key in effective_keys:
         try:
-            items = iter_collection_items(coll_key, page_size=page_size)
+            items = iter_collection_items(mcp_url, coll_key, page_size=page_size)
         except Exception as exc:
             logger.warning("获取分组条目失败：%s，错误=%s", coll_key, exc)
             continue
@@ -208,7 +214,7 @@ def collect_items_by_collections(collection_keys, recursive=True, page_size=50):
     return all_items
 
 
-def search_all_items(page_size=50):
+def search_all_items(mcp_url, page_size=50):
     """Paginate through search_library to collect every item key."""
     all_items = []
     offset = 0
@@ -217,6 +223,7 @@ def search_all_items(page_size=50):
     for _ in range(MAX_PAGES_GUARD):
         result = _mcp_call(
             "tools/call",
+            mcp_url,
             {
                 "name": "search_library",
                 "arguments": {"q": "", "limit": page_size, "offset": offset},
@@ -246,10 +253,11 @@ def search_all_items(page_size=50):
     return all_items
 
 
-def get_attachment_paths(item_key):
+def get_attachment_paths(mcp_url, item_key):
     """Return local file paths for supported attachments of a given item."""
     result = _mcp_call(
         "tools/call",
+        mcp_url,
         {"name": "get_item_details", "arguments": {"itemKey": item_key}},
     )
 
@@ -285,6 +293,7 @@ def get_attachment_paths(item_key):
 
 
 def collect_files(
+    cfg,
     progress_processed=None,
     collection_keys=None,
     recursive=True,
@@ -294,6 +303,7 @@ def collect_files(
     """Collect all valid attachment paths, deduplicated and filtered.
 
     Args:
+        cfg: configuration dict with cfg["zotero"]["mcp_url"].
         progress_processed: dict of already-processed task keys.
         collection_keys: list of collection keys to filter by, or None for all.
         recursive: whether to include subcollection items (default True).
@@ -303,13 +313,15 @@ def collect_files(
     Returns:
         dict: {file_path: task_key} where task_key = "item_key#index"
     """
+    mcp_url = cfg["zotero"]["mcp_url"]
+
     if progress_processed is None:
         progress_processed = {}
 
     if collection_keys:
-        items = collect_items_by_collections(collection_keys, recursive=recursive, page_size=page_size)
+        items = collect_items_by_collections(mcp_url, collection_keys, recursive=recursive, page_size=page_size)
     else:
-        items = search_all_items(page_size=page_size)
+        items = search_all_items(mcp_url, page_size=page_size)
     file_map = {}
     seen_paths = set()
     skipped_processed = 0
@@ -330,7 +342,7 @@ def collect_files(
             continue
 
         try:
-            paths = get_attachment_paths(item_key)
+            paths = get_attachment_paths(mcp_url, item_key)
         except Exception as exc:
             logger.warning("获取条目附件失败：%s，错误=%s", item_key, exc)
             continue

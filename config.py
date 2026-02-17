@@ -44,3 +44,13 @@ DIFY_REMOVE_EXTRA_SPACES = os.getenv("DIFY_REMOVE_EXTRA_SPACES", "true").lower()
 DIFY_REMOVE_URLS_EMAILS = os.getenv("DIFY_REMOVE_URLS_EMAILS", "false").lower() == "true"
 DIFY_DOC_FORM = os.getenv("DIFY_DOC_FORM", "")
 DIFY_DOC_LANGUAGE = os.getenv("DIFY_DOC_LANGUAGE", "")
+
+# Markdown Cleaning Configuration
+MD_CLEAN_ENABLED = os.getenv("MD_CLEAN_ENABLED", "true").lower() == "true"
+MD_CLEAN_COLLAPSE_BLANK_LINES = os.getenv("MD_CLEAN_COLLAPSE_BLANK_LINES", "true").lower() == "true"
+MD_CLEAN_STRIP_HTML = os.getenv("MD_CLEAN_STRIP_HTML", "true").lower() == "true"
+MD_CLEAN_REMOVE_CONTROL_CHARS = os.getenv("MD_CLEAN_REMOVE_CONTROL_CHARS", "true").lower() == "true"
+MD_CLEAN_REMOVE_IMAGE_PLACEHOLDERS = os.getenv("MD_CLEAN_REMOVE_IMAGE_PLACEHOLDERS", "true").lower() == "true"
+MD_CLEAN_REMOVE_PAGE_NUMBERS = os.getenv("MD_CLEAN_REMOVE_PAGE_NUMBERS", "false").lower() == "true"
+MD_CLEAN_REMOVE_WATERMARK = os.getenv("MD_CLEAN_REMOVE_WATERMARK", "false").lower() == "true"
+MD_CLEAN_WATERMARK_PATTERNS = os.getenv("MD_CLEAN_WATERMARK_PATTERNS", "")

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zotero-MinerU-Dify 流程</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">ZMD 流程</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link active" href="#" data-view="dashboard">仪表盘</a>
+                <a class="nav-link" href="#" data-view="config">配置</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container-fluid mt-5 pt-3">
+        <!-- Dashboard View -->
+        <div id="view-dashboard">
+            <!-- Control Bar -->
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label class="form-label fw-bold">Zotero 分组 Key</label>
+                    <div class="input-group">
+                        <div class="input-group">
+                            <input type="text" id="collection-keys" class="form-control" placeholder="分分组 Key (点击选择按钮)"
+                                readonly>
+                            <button id="btn-select-zotero" class="btn btn-outline-primary" type="button">选择分组</button>
+                            <button id="btn-check-zotero" class="btn btn-outline-secondary" type="button">检查链接</button>
+                        </div>
+                    </div>
+                    <small id="zotero-status" class="text-muted"></small>
+                </div>
+                <div class="col-md-6 d-flex align-items-end gap-2">
+                    <button id="btn-start" class="btn btn-primary">开始流程</button>
+                    <button id="btn-cancel" class="btn btn-outline-danger" disabled>取消</button>
+                </div>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-muted">等待中</h5>
+                            <p class="card-text display-6" id="stat-pending">0</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card text-center border-success">
+                        <div class="card-body">
+                            <h5 class="card-title text-success">成功</h5>
+                            <p class="card-text display-6 text-success" id="stat-succeeded">0</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card text-center border-danger">
+                        <div class="card-body">
+                            <h5 class="card-title text-danger">失败</h5>
+                            <p class="card-text display-6 text-danger" id="stat-failed">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pipeline Stepper -->
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="d-flex justify-content-between pipeline-stepper" id="pipeline-stepper">
+                        <div class="step" data-stage="zotero_collect"><span
+                                class="step-icon">&#9675;</span><small>Zotero</small></div>
+                        <div class="step" data-stage="mineru_upload"><span
+                                class="step-icon">&#9675;</span><small>MinerU</small></div>
+                        <div class="step" data-stage="md_clean"><span class="step-icon">&#9675;</span><small>清洗</small>
+                        </div>
+                        <div class="step" data-stage="smart_split"><span
+                                class="step-icon">&#9675;</span><small>分割</small></div>
+                        <div class="step" data-stage="dify_upload"><span
+                                class="step-icon">&#9675;</span><small>Dify</small></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Events Log -->
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between">
+                            <span>事件日志</span>
+                            <small class="text-muted" id="event-count">0 事件</small>
+                        </div>
+                        <div class="card-body p-0">
+                            <div id="event-log" class="event-log"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- File List -->
+            <div class="row">
+                <div class="col-12">
+                    <h5>文件列表</h5>
+                    <div id="file-list" class="row row-cols-1 row-cols-md-2 g-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Config View (hidden by default) -->
+        <div id="view-config" class="d-none">
+            <div class="row">
+                <!-- Category Tabs -->
+                <div class="col-md-3">
+                    <div class="list-group" id="config-tabs"></div>
+                </div>
+                <!-- Config Form -->
+                <div class="col-md-9">
+                    <div id="config-form-container"></div>
+                    <div class="mt-3">
+                        <button id="btn-save-config" class="btn btn-primary">保存配置</button>
+                        <button id="btn-reset-config" class="btn btn-outline-secondary ms-2">重置默认</button>
+                        <button id="btn-import-env" class="btn btn-outline-info ms-2">导入 .env</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
+
+    <!-- Zotero Collection Selection Modal -->
+    <div class="modal fade" id="zotero-collection-modal" tabindex="-1" aria-labelledby="zoteroModalLabel"
+        aria-hidden="true">
+        <div class="modal-dialog modal-dialog-scrollable modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="zoteroModalLabel">选择 Zotero 分组</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="zotero-collection-list" class="list-group list-group-flush">
+                        <div class="text-center text-muted py-3">加载中...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="btn-confirm-zotero-selection">确定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/config.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+
+</html>

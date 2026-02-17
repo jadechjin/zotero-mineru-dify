@@ -6,22 +6,21 @@ import zipfile
 
 import requests
 
-from config import (
-    MINERU_API_TOKEN,
-    MINERU_BASE_URL,
-    MINERU_BATCH_SIZE,
-    MINERU_MAX_FILE_SIZE_BYTES,
-    MINERU_MODEL_VERSION,
-    POLL_INTERVAL_MINERU,
-    POLL_TIMEOUT_MINERU,
-)
-
 logger = logging.getLogger(__name__)
 
-_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {MINERU_API_TOKEN}",
-}
+MINERU_BASE_URL = "https://mineru.net/api/v4"
+MINERU_BATCH_SIZE = 200
+MINERU_MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024
+MINERU_MODEL_VERSION = "vlm"
+POLL_INTERVAL_MINERU = 30
+
+
+def _build_headers(api_token):
+    """Build request headers with the given API token."""
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_token}",
+    }
 
 
 def _validate_file_size(file_path):
@@ -34,19 +33,21 @@ def _validate_file_size(file_path):
         )
 
 
-def _request_upload_urls(file_entries):
+def _request_upload_urls(file_entries, api_token, model_version="vlm"):
     """Request pre-signed upload URLs from MinerU.
 
     Args:
         file_entries: list of {"name": filename, "data_id": item_key}
+        api_token: MinerU API token.
+        model_version: MinerU model version (default: "vlm").
 
     Returns:
         (batch_id, file_urls) where file_urls is a list of pre-signed PUT URLs.
     """
     resp = requests.post(
         f"{MINERU_BASE_URL}/file-urls/batch",
-        headers=_HEADERS,
-        json={"files": file_entries, "model_version": MINERU_MODEL_VERSION},
+        headers=_build_headers(api_token),
+        json={"files": file_entries, "model_version": model_version},
         timeout=60,
     )
     resp.raise_for_status()
@@ -100,10 +101,11 @@ def _upload_file(url, file_path, max_retries=3):
                 ) from exc
 
 
-def upload_batch(file_items):
+def upload_batch(cfg, file_items):
     """Upload a batch of files to MinerU.
 
     Args:
+        cfg: configuration dict with cfg["mineru"]["api_token"].
         file_items: list of (file_path, task_key) tuples. Max 200 per call.
 
     Returns:
@@ -112,6 +114,9 @@ def upload_batch(file_items):
             failed_items = list of (task_key, error_msg) that failed.
             batch_id may be empty when all files fail local validation.
     """
+    api_token = cfg["mineru"]["api_token"]
+    model_version = cfg["mineru"].get("model_version", "vlm")
+
     if len(file_items) > MINERU_BATCH_SIZE:
         raise ValueError(
             f"Batch size {len(file_items)} exceeds limit {MINERU_BATCH_SIZE}"
@@ -143,7 +148,7 @@ def upload_batch(file_items):
         for path, key in valid_items
     ]
 
-    batch_id, urls = _request_upload_urls(entries)
+    batch_id, urls = _request_upload_urls(entries, api_token, model_version=model_version)
 
     if len(urls) != len(valid_items):
         raise RuntimeError(
@@ -172,10 +177,12 @@ def upload_batch(file_items):
     return batch_id, uploaded_items, failed_items
 
 
-def poll_batch(batch_id, expected_count=None, expected_keys=None):
+def poll_batch(cfg, batch_id, expected_count=None, expected_keys=None):
     """Poll MinerU until all tasks in a batch reach a terminal state.
 
     Args:
+        cfg: configuration dict with cfg["mineru"]["api_token"] and
+            cfg["mineru"]["poll_timeout_s"].
         batch_id: the batch identifier.
         expected_count: if set, consider batch complete when this many
             results reach a terminal state (for partial uploads).
@@ -186,20 +193,23 @@ def poll_batch(batch_id, expected_count=None, expected_keys=None):
         list of result dicts from the API.
 
     Raises:
-        TimeoutError: if batch does not finish within POLL_TIMEOUT_MINERU seconds.
+        TimeoutError: if batch does not finish within poll_timeout_s seconds.
     """
+    api_token = cfg["mineru"]["api_token"]
+    poll_timeout = cfg["mineru"]["poll_timeout_s"]
+
     start = time.time()
     expected_keys_set = set(expected_keys) if expected_keys else None
 
     while True:
-        if time.time() - start > POLL_TIMEOUT_MINERU:
+        if time.time() - start > poll_timeout:
             raise TimeoutError(
-                f"Batch {batch_id} did not finish within {POLL_TIMEOUT_MINERU}s"
+                f"Batch {batch_id} did not finish within {poll_timeout}s"
             )
 
         resp = requests.get(
             f"{MINERU_BASE_URL}/extract-results/batch/{batch_id}",
-            headers={"Authorization": f"Bearer {MINERU_API_TOKEN}"},
+            headers={"Authorization": f"Bearer {api_token}"},
             timeout=30,
         )
         resp.raise_for_status()
@@ -301,10 +311,12 @@ def _extract_md_from_zip(content_bytes):
     return None
 
 
-def process_files(file_map):
+def process_files(cfg, file_map):
     """Upload files in batches, poll results, and download markdown.
 
     Args:
+        cfg: configuration dict with cfg["mineru"]["api_token"] and
+            cfg["mineru"]["poll_timeout_s"].
         file_map: {file_path: task_key}
 
     Returns:
@@ -326,7 +338,7 @@ def process_files(file_map):
         )
 
         try:
-            batch_id, uploaded, upload_failed = upload_batch(batch)
+            batch_id, uploaded, upload_failed = upload_batch(cfg, batch)
         except Exception as exc:
             logger.error("批次 %d 初始化失败：%s", batch_num, exc)
             for path, key in batch:
@@ -345,6 +357,7 @@ def process_files(file_map):
         try:
             expected_keys = [key for _, key in uploaded]
             results = poll_batch(
+                cfg,
                 batch_id,
                 expected_count=len(uploaded),
                 expected_keys=expected_keys,

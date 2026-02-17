@@ -2,21 +2,22 @@ import json
 import logging
 import os
 
-from config import PROGRESS_FILE
-
 logger = logging.getLogger(__name__)
+
+PROGRESS_FILE = os.path.join(os.path.dirname(__file__), "progress.json")
 
 
 def _empty_progress():
     return {"processed": {}, "failed": {}}
 
 
-def load_progress():
-    if not os.path.exists(PROGRESS_FILE):
+def load_progress(progress_file=None):
+    progress_file = progress_file or PROGRESS_FILE
+    if not os.path.exists(progress_file):
         return _empty_progress()
 
     try:
-        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+        with open(progress_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("读取进度文件失败：%s", exc)
@@ -68,8 +69,9 @@ def is_processed(progress_processed, item_key, task_key, target_dataset=None):
     return False
 
 
-def save_progress(progress):
-    tmp_file = f"{PROGRESS_FILE}.tmp"
+def save_progress(progress, progress_file=None):
+    progress_file = progress_file or PROGRESS_FILE
+    tmp_file = f"{progress_file}.tmp"
     with open(tmp_file, "w", encoding="utf-8") as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_file, PROGRESS_FILE)
+    os.replace(tmp_file, progress_file)

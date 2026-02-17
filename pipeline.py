@@ -1,17 +1,54 @@
-﻿"""Zotero -> MinerU -> Dify 自动化流水线。"""
+"""Zotero -> MinerU -> Dify 自动化流水线（旧 CLI 入口）。"""
 
 import argparse
 import logging
+import os
 import sys
 
 from config import (
     DIFY_API_KEY,
+    DIFY_BASE_URL,
+    DIFY_CHUNK_OVERLAP,
+    DIFY_DATASET_NAME,
+    DIFY_DOC_FORM,
+    DIFY_DOC_LANGUAGE,
+    DIFY_INDEX_MAX_WAIT,
+    DIFY_PARENT_MODE,
+    DIFY_PIPELINE_FILE,
+    DIFY_PROCESS_MODE,
+    DIFY_REMOVE_EXTRA_SPACES,
+    DIFY_REMOVE_URLS_EMAILS,
+    DIFY_SEGMENT_MAX_TOKENS,
+    DIFY_SEGMENT_SEPARATOR,
+    DIFY_SUBCHUNK_MAX_TOKENS,
+    DIFY_SUBCHUNK_OVERLAP,
+    DIFY_SUBCHUNK_SEPARATOR,
+    DIFY_UPLOAD_DELAY,
+    MD_CLEAN_COLLAPSE_BLANK_LINES,
+    MD_CLEAN_ENABLED,
+    MD_CLEAN_REMOVE_CONTROL_CHARS,
+    MD_CLEAN_REMOVE_IMAGE_PLACEHOLDERS,
+    MD_CLEAN_REMOVE_PAGE_NUMBERS,
+    MD_CLEAN_REMOVE_WATERMARK,
+    MD_CLEAN_STRIP_HTML,
+    MD_CLEAN_WATERMARK_PATTERNS,
     MINERU_API_TOKEN,
+    POLL_TIMEOUT_MINERU,
     ZOTERO_COLLECTION_KEYS,
     ZOTERO_COLLECTION_PAGE_SIZE,
     ZOTERO_COLLECTION_RECURSIVE,
+    ZOTERO_MCP_URL,
 )
-from dify_client import RAG_PIPELINE_MODE, get_dataset_info, get_or_create_dataset, upload_all
+from dify_client import (
+    RAG_PIPELINE_MODE,
+    build_markdown_doc_name,
+    get_dataset_document_name_index,
+    get_dataset_document_total,
+    get_dataset_info,
+    get_or_create_dataset,
+    upload_all,
+)
+from md_cleaner import clean_all
 from mineru_client import process_files
 from progress import load_progress, save_progress
 from zotero_client import check_connection, collect_files, list_collections
@@ -22,6 +59,55 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+
+def _build_cfg_from_env():
+    """从旧 config.py 的环境变量构建 cfg dict，兼容新的配置注入接口。"""
+    return {
+        "zotero": {
+            "mcp_url": ZOTERO_MCP_URL,
+            "collection_keys": ZOTERO_COLLECTION_KEYS,
+            "collection_recursive": ZOTERO_COLLECTION_RECURSIVE,
+            "collection_page_size": ZOTERO_COLLECTION_PAGE_SIZE,
+        },
+        "mineru": {
+            "api_token": MINERU_API_TOKEN,
+            "poll_timeout_s": POLL_TIMEOUT_MINERU,
+        },
+        "dify": {
+            "api_key": DIFY_API_KEY,
+            "base_url": DIFY_BASE_URL,
+            "dataset_name": DIFY_DATASET_NAME,
+            "pipeline_file": DIFY_PIPELINE_FILE,
+            "process_mode": DIFY_PROCESS_MODE,
+            "segment_separator": DIFY_SEGMENT_SEPARATOR,
+            "segment_max_tokens": DIFY_SEGMENT_MAX_TOKENS,
+            "chunk_overlap": DIFY_CHUNK_OVERLAP,
+            "parent_mode": DIFY_PARENT_MODE,
+            "subchunk_separator": DIFY_SUBCHUNK_SEPARATOR,
+            "subchunk_max_tokens": DIFY_SUBCHUNK_MAX_TOKENS,
+            "subchunk_overlap": DIFY_SUBCHUNK_OVERLAP,
+            "remove_extra_spaces": DIFY_REMOVE_EXTRA_SPACES,
+            "remove_urls_emails": DIFY_REMOVE_URLS_EMAILS,
+            "index_max_wait_s": DIFY_INDEX_MAX_WAIT,
+            "doc_form": DIFY_DOC_FORM,
+            "doc_language": DIFY_DOC_LANGUAGE,
+            "upload_delay": DIFY_UPLOAD_DELAY,
+        },
+        "md_clean": {
+            "enabled": MD_CLEAN_ENABLED,
+            "collapse_blank_lines": MD_CLEAN_COLLAPSE_BLANK_LINES,
+            "strip_html": MD_CLEAN_STRIP_HTML,
+            "remove_control_chars": MD_CLEAN_REMOVE_CONTROL_CHARS,
+            "remove_image_placeholders": MD_CLEAN_REMOVE_IMAGE_PLACEHOLDERS,
+            "remove_page_numbers": MD_CLEAN_REMOVE_PAGE_NUMBERS,
+            "remove_watermark": MD_CLEAN_REMOVE_WATERMARK,
+            "watermark_patterns": MD_CLEAN_WATERMARK_PATTERNS,
+        },
+        "smart_split": {
+            "enabled": False,
+        },
+    }
 
 
 def build_arg_parser():
@@ -63,10 +149,10 @@ def _parse_collection_keys(raw):
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
-def select_collections_interactively(recursive=True):
+def select_collections_interactively(cfg, recursive=True):
     logger.info("正在从 Zotero 获取分组列表...")
     try:
-        collections = list_collections(mode="complete")
+        collections = list_collections(cfg, mode="complete")
     except Exception as exc:
         logger.warning("获取分组失败：%s。将回退为处理整个文库。", exc)
         return {"collection_keys": None, "recursive": recursive, "source": "default-all"}
@@ -124,7 +210,7 @@ def select_collections_interactively(recursive=True):
         return {"collection_keys": selected, "recursive": recursive, "source": "interactive"}
 
 
-def resolve_collection_selection(args):
+def resolve_collection_selection(cfg, args):
     recursive = ZOTERO_COLLECTION_RECURSIVE and not args.no_recursive
     page_size = args.page_size or ZOTERO_COLLECTION_PAGE_SIZE
     if page_size < 1:
@@ -145,7 +231,7 @@ def resolve_collection_selection(args):
         if not sys.stdin.isatty():
             logger.warning("请求了 --interactive，但当前不是 TTY，回退为整个文库。")
             return {"collection_keys": None, "recursive": recursive, "page_size": page_size, "source": "default-all"}
-        sel = select_collections_interactively(recursive=recursive)
+        sel = select_collections_interactively(cfg, recursive=recursive)
         sel["page_size"] = page_size
         return sel
 
@@ -155,7 +241,7 @@ def resolve_collection_selection(args):
         return {"collection_keys": env_keys, "recursive": recursive, "page_size": page_size, "source": "env"}
 
     if sys.stdin.isatty():
-        sel = select_collections_interactively(recursive=recursive)
+        sel = select_collections_interactively(cfg, recursive=recursive)
         sel["page_size"] = page_size
         return sel
 
@@ -197,8 +283,50 @@ def _clean_conflict_processed_records(progress, dataset_id):
     return len(conflict_keys)
 
 
+def _reconcile_processed_records_with_remote(progress, dataset_id, remote_name_index):
+    """按远端知识库文档名核验本地 processed，返回 (清理数量, 原因)。"""
+    total = remote_name_index.get("total")
+    remote_names = remote_name_index.get("names") or set()
+    remote_item_keys = remote_name_index.get("prefixed_item_keys") or set()
+
+    stale_keys = []
+    if total == 0:
+        for key, entry in progress["processed"].items():
+            if isinstance(entry, dict) and entry.get("dify_dataset") == dataset_id:
+                stale_keys.append(key)
+        for key in stale_keys:
+            progress["processed"].pop(key, None)
+        return len(stale_keys), "empty-dataset"
+
+    if not remote_item_keys:
+        return 0, "no-prefixed-item-key"
+
+    for key, entry in progress["processed"].items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("dify_dataset") != dataset_id:
+            continue
+
+        processed_key = str(key)
+        item_key = processed_key.split("#", 1)[0]
+        file_name = entry.get("file_name") or "document"
+        expected_name = build_markdown_doc_name(item_key, file_name)
+
+        if expected_name in remote_names:
+            continue
+        if item_key in remote_item_keys:
+            continue
+        stale_keys.append(processed_key)
+
+    for key in stale_keys:
+        progress["processed"].pop(key, None)
+
+    return len(stale_keys), "name-index"
+
+
 def main():
     args = build_arg_parser().parse_args()
+    cfg = _build_cfg_from_env()
 
     if not DIFY_API_KEY:
         logger.error("未设置 DIFY_API_KEY，请检查 .env。")
@@ -209,12 +337,12 @@ def main():
         sys.exit(1)
 
     logger.info("正在检查 Zotero MCP 连接...")
-    if not check_connection():
+    if not check_connection(cfg):
         logger.error("无法连接 Zotero MCP 服务。请确认 Zotero 已启动且 MCP 插件已启用。")
         sys.exit(1)
     logger.info("Zotero MCP 连接正常。")
 
-    selection = resolve_collection_selection(args)
+    selection = resolve_collection_selection(cfg, args)
     collection_keys = selection["collection_keys"]
     recursive = selection["recursive"]
     page_size = selection["page_size"]
@@ -230,8 +358,8 @@ def main():
         logger.info("处理整个文库（source=%s）", selection["source"])
 
     logger.info("正在准备 Dify 知识库...")
-    dataset_id = get_or_create_dataset()
-    dataset_info = get_dataset_info(dataset_id)
+    dataset_id = get_or_create_dataset(cfg)
+    dataset_info = get_dataset_info(cfg, dataset_id)
     dataset_name = dataset_info.get("name") or "unknown"
     dataset_runtime_mode = dataset_info.get("runtime_mode") or "unknown"
     dataset_doc_form = dataset_info.get("doc_form") or "unknown"
@@ -242,20 +370,53 @@ def main():
         dataset_runtime_mode,
         dataset_doc_form,
     )
+    logger.info("正在从 Dify 读取文档索引用于本地进度核验...")
+    remote_name_index = get_dataset_document_name_index(cfg, dataset_id)
+    dataset_doc_total = remote_name_index.get("total")
+    if dataset_doc_total is None:
+        dataset_doc_total = get_dataset_document_total(cfg, dataset_id)
+        remote_name_index["total"] = dataset_doc_total
+    if dataset_doc_total is not None:
+        logger.info("知识库文档总数：%d", dataset_doc_total)
     if dataset_runtime_mode == RAG_PIPELINE_MODE:
         logger.info("检测到 rag_pipeline 知识库，开始解析上传任务。")
 
     progress = load_progress()
+    should_save_progress = False
     conflict_count = _clean_conflict_processed_records(progress, dataset_id)
     if conflict_count:
         logger.warning(
             "检测到 %d 条 processed/failed 冲突记录，已从 processed 中移除并允许重试。",
             conflict_count,
         )
+        should_save_progress = True
+
+    stale_count, stale_reason = _reconcile_processed_records_with_remote(
+        progress,
+        dataset_id,
+        remote_name_index,
+    )
+    if stale_count:
+        if stale_reason == "empty-dataset":
+            logger.warning(
+                "目标知识库文档总数为 0，已清理当前知识库 %d 条本地 processed 记录以重新上传。",
+                stale_count,
+            )
+        else:
+            logger.warning(
+                "已根据远端文档名索引清理当前知识库 %d 条本地 processed 残留。",
+                stale_count,
+            )
+        should_save_progress = True
+    elif stale_reason == "no-prefixed-item-key":
+        logger.info("远端文档名不含 [item_key] 前缀，已跳过按名称清理，仅保留空库自动清理。")
+
+    if should_save_progress:
         save_progress(progress)
 
     logger.info("正在收集 Zotero 附件路径...")
     file_map = collect_files(
+        cfg,
         progress_processed=progress["processed"],
         collection_keys=collection_keys,
         recursive=recursive,
@@ -270,7 +431,7 @@ def main():
     logger.info("发现 %d 个新文件。", len(file_map))
 
     logger.info("开始 MinerU 批量解析...")
-    md_results, md_failures = process_files(file_map)
+    md_results, md_failures = process_files(cfg, file_map)
 
     for key, reason in md_failures.items():
         progress["failed"][key] = {
@@ -285,8 +446,19 @@ def main():
         return
 
     logger.info("成功解析为 Markdown：%d 个文件。", len(md_results))
+
+    logger.info("正在清洗 Markdown...")
+    md_results, clean_stats = clean_all(md_results, cfg)
+    logger.info(
+        "Markdown 清洗完成：原始总字符 %d，清洗后 %d（减少 %.1f%%）",
+        clean_stats["total_original"],
+        clean_stats["total_cleaned"],
+        clean_stats["reduction_pct"],
+    )
+
     logger.info("正在上传 %d 篇文档到 Dify...", len(md_results))
     uploaded_keys, upload_failures = upload_all(
+        cfg=cfg,
         dataset_id=dataset_id,
         md_results=md_results,
         dataset_info=dataset_info,

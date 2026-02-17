@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import os
 import re
@@ -11,39 +11,19 @@ try:
 except Exception:  # pragma: no cover - fallback for missing dependency
     yaml = None
 
-from config import (
-    DIFY_API_KEY,
-    DIFY_BASE_URL,
-    DIFY_CHUNK_OVERLAP,
-    DIFY_DATASET_NAME,
-    DIFY_DOC_FORM,
-    DIFY_DOC_LANGUAGE,
-    DIFY_PARENT_MODE,
-    DIFY_PIPELINE_FILE,
-    DIFY_PROCESS_MODE,
-    DIFY_REMOVE_EXTRA_SPACES,
-    DIFY_REMOVE_URLS_EMAILS,
-    DIFY_SEGMENT_MAX_TOKENS,
-    DIFY_SEGMENT_SEPARATOR,
-    DIFY_SUBCHUNK_MAX_TOKENS,
-    DIFY_SUBCHUNK_OVERLAP,
-    DIFY_SUBCHUNK_SEPARATOR,
-    DIFY_INDEX_MAX_WAIT,
-    DIFY_UPLOAD_DELAY,
-    POLL_INTERVAL_DIFY,
-)
-
 logger = logging.getLogger(__name__)
 
 TEXT_MODEL_FORM = "text_model"
 HIERARCHICAL_FORM = "hierarchical_model"
 RAG_PIPELINE_MODE = "rag_pipeline"
 _SHARED_REF_PATTERN = re.compile(r"\{\{#rag\.shared\.([A-Za-z0-9_]+)#\}\}")
-_PIPELINE_RULE_CACHE = None
+_DOC_NAME_ITEM_KEY_PATTERN = re.compile(r"^\[([^\]]+)\]\s")
+
+POLL_INTERVAL_DIFY = 10
 
 
-def _headers(content_type="application/json"):
-    headers = {"Authorization": f"Bearer {DIFY_API_KEY}"}
+def _headers(api_key, content_type="application/json"):
+    headers = {"Authorization": f"Bearer {api_key}"}
     if content_type:
         headers["Content-Type"] = content_type
     return headers
@@ -72,8 +52,8 @@ def _parse_bool(value):
     return None
 
 
-def _discover_pipeline_file():
-    configured = (DIFY_PIPELINE_FILE or "").strip()
+def _discover_pipeline_file(pipeline_file, dataset_name):
+    configured = (pipeline_file or "").strip()
     candidates = []
     if configured:
         configured_path = Path(configured)
@@ -82,8 +62,8 @@ def _discover_pipeline_file():
         logger.warning("未找到 DIFY_PIPELINE_FILE 指定的文件: %s", configured)
 
     base_names = []
-    if DIFY_DATASET_NAME:
-        base_names.append(DIFY_DATASET_NAME.strip())
+    if dataset_name:
+        base_names.append(dataset_name.strip())
 
     search_dirs = [
         Path.cwd(),
@@ -112,7 +92,6 @@ def _discover_pipeline_file():
     if not existing:
         return None
 
-    # 自动发现时优先使用最新导出的 pipeline 文件。
     existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return existing[0]
 
@@ -214,19 +193,20 @@ def _extract_pipeline_rule_overrides(pipeline_obj):
     return extracted
 
 
-def _load_pipeline_rule_overrides():
-    global _PIPELINE_RULE_CACHE
-    if _PIPELINE_RULE_CACHE is not None:
-        return _PIPELINE_RULE_CACHE
+def _load_pipeline_rule_overrides(cfg):
+    """加载 pipeline 文件覆盖参数（每次调用重新发现，不使用全局缓存）。"""
+    dify_cfg = cfg.get("dify", {})
 
-    _PIPELINE_RULE_CACHE = {}
     if yaml is None:
-        logger.warning("未安装 PyYAML，无法解析 .pipeline 文件，将回退到 .env 参数。如需使用 pipeline 文件一键配置 dify 参数。可将 pipeline 文件放在脚本目录、Downloads 。")
-        return _PIPELINE_RULE_CACHE
+        logger.warning("未安装 PyYAML，无法解析 .pipeline 文件，将回退到配置参数。")
+        return {}
 
-    pipeline_path = _discover_pipeline_file()
+    pipeline_path = _discover_pipeline_file(
+        dify_cfg.get("pipeline_file", ""),
+        dify_cfg.get("dataset_name", ""),
+    )
     if not pipeline_path:
-        return _PIPELINE_RULE_CACHE
+        return {}
 
     try:
         with open(pipeline_path, "r", encoding="utf-8") as f:
@@ -234,31 +214,28 @@ def _load_pipeline_rule_overrides():
         overrides = _extract_pipeline_rule_overrides(pipeline_obj)
         if not isinstance(overrides, dict):
             overrides = {}
-        _PIPELINE_RULE_CACHE = overrides
 
         if overrides:
-            logger.info(
-                "已从 pipeline 文件加载分块参数: %s",
-                pipeline_path,
-            )
+            logger.info("已从 pipeline 文件加载分块参数: %s", pipeline_path)
         else:
             logger.warning(
-                "pipeline 文件已找到但未解析到 parentchild_chunker 参数，将回退到 .env: %s",
+                "pipeline 文件已找到但未解析到 parentchild_chunker 参数，将回退到配置: %s",
                 pipeline_path,
             )
     except Exception as exc:
-        logger.warning("读取 pipeline 文件失败，将回退到 .env（%s）: %s", pipeline_path, exc)
+        logger.warning("读取 pipeline 文件失败，将回退到配置（%s）: %s", pipeline_path, exc)
+        overrides = {}
 
-    return _PIPELINE_RULE_CACHE
+    return overrides
 
 
-def _list_datasets():
+def _list_datasets(base_url, api_key):
     datasets = []
     page = 1
     while True:
         resp = requests.get(
-            f"{DIFY_BASE_URL}/datasets",
-            headers=_headers(content_type=None),
+            f"{base_url}/datasets",
+            headers=_headers(api_key, content_type=None),
             params={"page": page, "limit": 100},
             timeout=30,
         )
@@ -271,10 +248,10 @@ def _list_datasets():
     return datasets
 
 
-def _fetch_dataset_detail(dataset_id):
+def _fetch_dataset_detail(base_url, api_key, dataset_id):
     resp = requests.get(
-        f"{DIFY_BASE_URL}/datasets/{dataset_id}",
-        headers=_headers(content_type=None),
+        f"{base_url}/datasets/{dataset_id}",
+        headers=_headers(api_key, content_type=None),
         timeout=30,
     )
     resp.raise_for_status()
@@ -284,10 +261,13 @@ def _fetch_dataset_detail(dataset_id):
     return body if isinstance(body, dict) else {}
 
 
-def get_dataset_info(dataset_id):
+def get_dataset_info(cfg, dataset_id):
     """读取知识库详情（doc_form/runtime_mode/name）。"""
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
     try:
-        body = _fetch_dataset_detail(dataset_id)
+        body = _fetch_dataset_detail(base_url, api_key, dataset_id)
         return {
             "id": dataset_id,
             "name": (body.get("name") or "").strip(),
@@ -306,41 +286,134 @@ def get_dataset_info(dataset_id):
         }
 
 
-def get_dataset_doc_form(dataset_id):
+def get_dataset_document_total(cfg, dataset_id):
+    """读取知识库文档总数。失败时返回 None。"""
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+    try:
+        resp = requests.get(
+            f"{base_url}/datasets/{dataset_id}/documents",
+            headers=_headers(api_key, content_type=None),
+            params={"page": 1, "limit": 1},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+
+        total = body.get("total")
+        if isinstance(total, int):
+            return total
+        if isinstance(total, str) and total.isdigit():
+            return int(total)
+
+        data = body.get("data")
+        has_more = body.get("has_more")
+        if isinstance(data, list) and has_more is False and not data:
+            return 0
+
+        logger.warning("读取知识库文档总数返回格式异常（%s）：%s", dataset_id, body)
+    except Exception as exc:
+        logger.warning("读取知识库文档总数失败（%s）：%s", dataset_id, exc)
+    return None
+
+
+def get_dataset_document_name_index(cfg, dataset_id):
+    """拉取知识库文档名索引。"""
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+
+    names = set()
+    prefixed_item_keys = set()
+    total = None
+    page = 1
+
+    try:
+        while True:
+            resp = requests.get(
+                f"{base_url}/datasets/{dataset_id}/documents",
+                headers=_headers(api_key, content_type=None),
+                params={"page": page, "limit": 100},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+
+            if total is None:
+                total_value = body.get("total")
+                if isinstance(total_value, int):
+                    total = total_value
+                elif isinstance(total_value, str) and total_value.isdigit():
+                    total = int(total_value)
+
+            docs = body.get("data")
+            docs = docs if isinstance(docs, list) else []
+            for doc in docs:
+                if not isinstance(doc, dict):
+                    continue
+                name = (doc.get("name") or "").strip()
+                if not name:
+                    continue
+                names.add(name)
+                matched = _DOC_NAME_ITEM_KEY_PATTERN.match(name)
+                if matched:
+                    prefixed_item_keys.add(matched.group(1))
+
+            if not body.get("has_more", False):
+                break
+            page += 1
+    except Exception as exc:
+        logger.warning("拉取知识库文档名索引失败（%s）：%s", dataset_id, exc)
+
+    return {
+        "total": total,
+        "names": names,
+        "prefixed_item_keys": prefixed_item_keys,
+    }
+
+
+def get_dataset_doc_form(cfg, dataset_id):
     """兼容旧接口：仅返回 doc_form。"""
-    return get_dataset_info(dataset_id).get("doc_form", "")
+    return get_dataset_info(cfg, dataset_id).get("doc_form", "")
 
 
-def get_or_create_dataset():
+def get_or_create_dataset(cfg):
     """严格使用配置中的知识库名，不会自动创建新知识库。"""
-    datasets = _list_datasets()
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+    dataset_name = dify_cfg.get("dataset_name", "")
+
+    datasets = _list_datasets(base_url, api_key)
     for ds in datasets:
-        if ds.get("name") == DIFY_DATASET_NAME:
-            logger.info("使用配置知识库: %s (%s)", DIFY_DATASET_NAME, ds["id"])
+        if ds.get("name") == dataset_name:
+            logger.info("使用配置知识库: %s (%s)", dataset_name, ds["id"])
             return ds["id"]
 
     raise RuntimeError(
-        f"未找到配置知识库 DIFY_DATASET_NAME={DIFY_DATASET_NAME}。"
+        f"未找到配置知识库 dataset_name={dataset_name}。"
         "检查 dify 中的数据库是否与项目中的一致。"
     )
 
 
-def _build_process_rule(resolved_doc_form=""):
+def _build_process_rule(cfg, resolved_doc_form=""):
     """按配置构建 process_rule。"""
-    mode = (DIFY_PROCESS_MODE or "").strip().lower()
+    dify_cfg = cfg.get("dify", {})
+    mode = (dify_cfg.get("process_mode") or "").strip().lower()
     if mode == "automatic":
         return {"mode": "automatic"}
     if mode != "custom":
-        logger.warning("DIFY_PROCESS_MODE=%r 非法，回退为 custom", DIFY_PROCESS_MODE)
+        logger.warning("process_mode=%r 非法，回退为 custom", dify_cfg.get("process_mode"))
 
-    pipeline_overrides = _load_pipeline_rule_overrides()
-    remove_extra_spaces = pipeline_overrides.get("remove_extra_spaces", DIFY_REMOVE_EXTRA_SPACES)
-    remove_urls_emails = pipeline_overrides.get("remove_urls_emails", DIFY_REMOVE_URLS_EMAILS)
-    segmentation_separator = pipeline_overrides.get("segmentation_separator", DIFY_SEGMENT_SEPARATOR)
-    segmentation_max_tokens = pipeline_overrides.get("segmentation_max_tokens", DIFY_SEGMENT_MAX_TOKENS)
-    parent_mode = pipeline_overrides.get("parent_mode", DIFY_PARENT_MODE)
-    subchunk_separator = pipeline_overrides.get("subchunk_separator", DIFY_SUBCHUNK_SEPARATOR)
-    subchunk_max_tokens = pipeline_overrides.get("subchunk_max_tokens", DIFY_SUBCHUNK_MAX_TOKENS)
+    pipeline_overrides = _load_pipeline_rule_overrides(cfg)
+    remove_extra_spaces = pipeline_overrides.get("remove_extra_spaces", dify_cfg.get("remove_extra_spaces", True))
+    remove_urls_emails = pipeline_overrides.get("remove_urls_emails", dify_cfg.get("remove_urls_emails", False))
+    segmentation_separator = pipeline_overrides.get("segmentation_separator", dify_cfg.get("segment_separator", "\\n\\n"))
+    segmentation_max_tokens = pipeline_overrides.get("segmentation_max_tokens", dify_cfg.get("segment_max_tokens", 800))
+    parent_mode = pipeline_overrides.get("parent_mode", dify_cfg.get("parent_mode", "paragraph"))
+    subchunk_separator = pipeline_overrides.get("subchunk_separator", dify_cfg.get("subchunk_separator", "\\n"))
+    subchunk_max_tokens = pipeline_overrides.get("subchunk_max_tokens", dify_cfg.get("subchunk_max_tokens", 256))
 
     rules = {
         "pre_processing_rules": [
@@ -350,17 +423,16 @@ def _build_process_rule(resolved_doc_form=""):
         "segmentation": {
             "separator": segmentation_separator,
             "max_tokens": segmentation_max_tokens,
-            "chunk_overlap": DIFY_CHUNK_OVERLAP,
+            "chunk_overlap": dify_cfg.get("chunk_overlap", 0),
         },
     }
 
-    # hierarchical_model 需要显式提供父子分块规则，否则会出现 completed 但 0 分块。
     if (resolved_doc_form or "").strip() == HIERARCHICAL_FORM:
         rules["parent_mode"] = parent_mode
         rules["subchunk_segmentation"] = {
             "separator": subchunk_separator,
             "max_tokens": subchunk_max_tokens,
-            "chunk_overlap": DIFY_SUBCHUNK_OVERLAP,
+            "chunk_overlap": dify_cfg.get("subchunk_overlap", 0),
         }
 
     return {
@@ -369,26 +441,35 @@ def _build_process_rule(resolved_doc_form=""):
     }
 
 
-def _to_markdown_doc_name(item_key, file_name):
+def build_markdown_doc_name(item_key, file_name):
     base_name = os.path.splitext(file_name or "document")[0].strip() or "document"
     return f"[{item_key}] {base_name}.md"
 
 
-def _upload_by_text(dataset_id, doc_name, text, resolved_doc_form):
+def _to_markdown_doc_name(item_key, file_name):
+    return build_markdown_doc_name(item_key, file_name)
+
+
+def _upload_by_text(cfg, dataset_id, doc_name, text, resolved_doc_form):
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+    doc_language = dify_cfg.get("doc_language", "")
+
     body = {
         "name": doc_name,
         "text": text,
         "indexing_technique": "high_quality",
-        "process_rule": _build_process_rule(resolved_doc_form),
+        "process_rule": _build_process_rule(cfg, resolved_doc_form),
     }
     if resolved_doc_form:
         body["doc_form"] = resolved_doc_form
-    if DIFY_DOC_LANGUAGE:
-        body["doc_language"] = DIFY_DOC_LANGUAGE
+    if doc_language:
+        body["doc_language"] = doc_language
 
     resp = requests.post(
-        f"{DIFY_BASE_URL}/datasets/{dataset_id}/document/create-by-text",
-        headers=_headers(),
+        f"{base_url}/datasets/{dataset_id}/document/create-by-text",
+        headers=_headers(api_key),
         json=body,
         timeout=60,
     )
@@ -397,27 +478,33 @@ def _upload_by_text(dataset_id, doc_name, text, resolved_doc_form):
 
 
 def _upload_markdown_as_file(
+    cfg,
     dataset_id,
     doc_name,
     text,
     resolved_doc_form,
     runtime_mode="",
 ):
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+    doc_language = dify_cfg.get("doc_language", "")
+
     payload = {
         "indexing_technique": "high_quality",
-        "process_rule": _build_process_rule(resolved_doc_form),
+        "process_rule": _build_process_rule(cfg, resolved_doc_form),
     }
     if resolved_doc_form:
         payload["doc_form"] = resolved_doc_form
-    if DIFY_DOC_LANGUAGE:
-        payload["doc_language"] = DIFY_DOC_LANGUAGE
+    if doc_language:
+        payload["doc_language"] = doc_language
 
     files = {"file": (doc_name, text.encode("utf-8"), "text/markdown")}
     data = {"data": json.dumps(payload, ensure_ascii=False)}
 
     resp = requests.post(
-        f"{DIFY_BASE_URL}/datasets/{dataset_id}/document/create-by-file",
-        headers=_headers(content_type=None),
+        f"{base_url}/datasets/{dataset_id}/document/create-by-file",
+        headers=_headers(api_key, content_type=None),
         files=files,
         data=data,
         timeout=120,
@@ -426,22 +513,23 @@ def _upload_markdown_as_file(
     return resp.json().get("batch", "")
 
 
-def upload_document(dataset_id, item_key, file_name, md_text, doc_form="", runtime_mode=""):
+def upload_document(cfg, dataset_id, item_key, file_name, md_text, doc_form="", runtime_mode=""):
     """上传单个 Markdown 文本到 Dify。"""
+    dify_cfg = cfg.get("dify", {})
     text = md_text if isinstance(md_text, str) else str(md_text or "")
     if not text.strip():
         logger.error("Markdown 为空，跳过上传: [%s] %s", item_key, file_name)
         return None
 
     doc_name = _to_markdown_doc_name(item_key, file_name)
-    resolved_doc_form = (doc_form or "").strip() or (DIFY_DOC_FORM or "").strip()
+    resolved_doc_form = (doc_form or "").strip() or (dify_cfg.get("doc_form") or "").strip()
     if not resolved_doc_form:
         resolved_doc_form = TEXT_MODEL_FORM
 
     try:
         use_text_upload = resolved_doc_form == TEXT_MODEL_FORM and (runtime_mode or "").strip() != RAG_PIPELINE_MODE
         if use_text_upload:
-            batch = _upload_by_text(dataset_id, doc_name, text, resolved_doc_form)
+            batch = _upload_by_text(cfg, dataset_id, doc_name, text, resolved_doc_form)
         else:
             if (runtime_mode or "").strip() == RAG_PIPELINE_MODE:
                 logger.info("当前知识库 runtime_mode=rag_pipeline，将以 Markdown 文件方式上传。")
@@ -451,6 +539,7 @@ def upload_document(dataset_id, item_key, file_name, md_text, doc_form="", runti
                     resolved_doc_form,
                 )
             batch = _upload_markdown_as_file(
+                cfg=cfg,
                 dataset_id=dataset_id,
                 doc_name=doc_name,
                 text=text,
@@ -475,18 +564,23 @@ def upload_document(dataset_id, item_key, file_name, md_text, doc_form="", runti
         return None
 
 
-def wait_for_indexing(dataset_id, batch, max_wait=None):
+def wait_for_indexing(cfg, dataset_id, batch, max_wait=None):
     """轮询 Dify 索引状态，直到完成/失败/超时。"""
+    dify_cfg = cfg.get("dify", {})
+    base_url = dify_cfg.get("base_url", "")
+    api_key = dify_cfg.get("api_key", "")
+    index_max_wait = dify_cfg.get("index_max_wait_s", 1800)
+
     if not batch:
         return False
 
     if max_wait is None or max_wait <= 0:
-        max_wait = DIFY_INDEX_MAX_WAIT
+        max_wait = index_max_wait
 
     def _fetch_docs():
         resp = requests.get(
-            f"{DIFY_BASE_URL}/datasets/{dataset_id}/documents/{batch}/indexing-status",
-            headers=_headers(content_type=None),
+            f"{base_url}/datasets/{dataset_id}/documents/{batch}/indexing-status",
+            headers=_headers(api_key, content_type=None),
             timeout=30,
         )
         resp.raise_for_status()
@@ -545,12 +639,11 @@ def wait_for_indexing(dataset_id, batch, max_wait=None):
         time.sleep(POLL_INTERVAL_DIFY)
 
     logger.warning(
-        "索引超时，batch=%s，已等待 %ss（可通过 DIFY_INDEX_MAX_WAIT 调整）",
+        "索引超时，batch=%s，已等待 %ss（可通过配置 index_max_wait_s 调整）",
         batch,
         max_wait,
     )
 
-    # 超时后做一次最终复查，避免“刚完成就被判失败”。
     try:
         docs = _fetch_docs()
         if docs and all(d.get("indexing_status") == "completed" for d in docs):
@@ -566,21 +659,25 @@ def wait_for_indexing(dataset_id, batch, max_wait=None):
     return False
 
 
-def upload_all(dataset_id, md_results, dataset_info=None):
+def upload_all(cfg, dataset_id, md_results, dataset_info=None):
     """上传全部 Markdown 文本到 Dify。"""
+    dify_cfg = cfg.get("dify", {})
+    upload_delay = dify_cfg.get("upload_delay", 1)
+    index_max_wait = dify_cfg.get("index_max_wait_s", 1800)
+    configured_doc_form = (dify_cfg.get("doc_form") or "").strip()
+
     uploaded = []
     failed = []
     pending_batches = {}
 
-    info = dataset_info or get_dataset_info(dataset_id)
+    info = dataset_info or get_dataset_info(cfg, dataset_id)
     dataset_doc_form = info.get("doc_form", "")
     dataset_runtime_mode = info.get("runtime_mode", "")
-    configured_doc_form = (DIFY_DOC_FORM or "").strip()
     effective_doc_form = dataset_doc_form or configured_doc_form or TEXT_MODEL_FORM
 
     if dataset_doc_form and configured_doc_form and dataset_doc_form != configured_doc_form:
         logger.warning(
-            "配置 DIFY_DOC_FORM=%s 与知识库 doc_form=%s 不一致，已自动使用知识库值。",
+            "配置 doc_form=%s 与知识库 doc_form=%s 不一致，已自动使用知识库值。",
             configured_doc_form,
             dataset_doc_form,
         )
@@ -592,6 +689,7 @@ def upload_all(dataset_id, md_results, dataset_info=None):
 
     for item_key, data in md_results.items():
         batch = upload_document(
+            cfg=cfg,
             dataset_id=dataset_id,
             item_key=item_key,
             file_name=data["file_name"],
@@ -603,17 +701,17 @@ def upload_all(dataset_id, md_results, dataset_info=None):
             pending_batches[item_key] = batch
         else:
             failed.append(item_key)
-        time.sleep(DIFY_UPLOAD_DELAY)
+        time.sleep(upload_delay)
 
     logger.info("Dify submit: %d 接受, %d 拒绝", len(pending_batches), len(failed))
     logger.info(
         "等待 %d 个批次完成索引（单批最大等待 %ss）...",
         len(pending_batches),
-        DIFY_INDEX_MAX_WAIT,
+        index_max_wait,
     )
 
     for item_key, batch in pending_batches.items():
-        if wait_for_indexing(dataset_id, batch):
+        if wait_for_indexing(cfg, dataset_id, batch):
             uploaded.append(item_key)
         else:
             failed.append(item_key)

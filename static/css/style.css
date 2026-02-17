@@ -1,0 +1,319 @@
+/* ZMD Pipeline custom styles */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap');
+
+:root {
+    --primary-color: #4361ee;
+    --secondary-color: #3f37c9;
+    --success-color: #2ec4b6;
+    --danger-color: #e63946;
+    --warning-color: #ff9f1c;
+    --info-color: #4cc9f0;
+    --light-bg: #f8f9fa;
+    --card-bg: #ffffff;
+    --text-main: #2b2d42;
+    --text-secondary: #8d99ae;
+    --border-radius: 12px;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 5px 15px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+body {
+    background-color: #f0f2f5;
+    font-family: 'Inter', 'Noto Sans SC', sans-serif;
+    color: var(--text-main);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Navbar */
+.navbar {
+    background: rgba(255, 255, 255, 0.9) !important;
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-sm);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.navbar-dark .navbar-brand {
+    color: var(--primary-color) !important;
+    font-weight: 700;
+    font-size: 1.5rem;
+}
+
+.navbar-dark .navbar-nav .nav-link {
+    color: var(--text-main) !important;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.navbar-dark .navbar-nav .nav-link:hover,
+.navbar-dark .navbar-nav .nav-link.active {
+    color: var(--primary-color) !important;
+}
+
+/* Cards */
+.card {
+    border: none;
+    border-radius: var(--border-radius);
+    background: var(--card-bg);
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.2s, box-shadow 0.2s;
+    margin-bottom: 1rem;
+}
+
+.card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.card-header {
+    background-color: transparent;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    font-weight: 600;
+    padding: 1rem 1.5rem;
+}
+
+/* Buttons */
+.btn {
+    border-radius: 8px;
+    padding: 0.5rem 1.2rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.btn-primary:hover {
+    background-color: var(--secondary-color);
+    border-color: var(--secondary-color);
+    box-shadow: 0 4px 12px rgba(67, 97, 238, 0.3);
+}
+
+/* Inputs */
+.form-control,
+.form-select {
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+    padding: 0.6rem 1rem;
+}
+
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.15);
+}
+
+/* Pipeline Stepper */
+.pipeline-stepper {
+    padding: 2rem 0;
+    background: white;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 1.5rem;
+}
+
+.pipeline-stepper .step {
+    text-align: center;
+    flex: 1;
+    position: relative;
+    opacity: 0.6;
+    transition: all 0.3s;
+}
+
+.pipeline-stepper .step.active,
+.pipeline-stepper .step.done,
+.pipeline-stepper .step.error {
+    opacity: 1;
+    font-weight: 600;
+}
+
+.pipeline-stepper .step .step-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: 0 auto 8px;
+    border-radius: 50%;
+    background: #f8f9fa;
+    border: 2px solid #e9ecef;
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pipeline-stepper .step.active .step-icon {
+    border-color: var(--primary-color);
+    color: white;
+    background-color: var(--primary-color);
+    box-shadow: 0 0 0 4px rgba(67, 97, 238, 0.2);
+    animation: pulse 2s infinite;
+}
+
+.pipeline-stepper .step.done .step-icon {
+    border-color: var(--success-color);
+    color: white;
+    background-color: var(--success-color);
+}
+
+.pipeline-stepper .step.error .step-icon {
+    border-color: var(--danger-color);
+    color: white;
+    background-color: var(--danger-color);
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(67, 97, 238, 0.4);
+    }
+
+    70% {
+        transform: scale(1.05);
+        box-shadow: 0 0 0 10px rgba(67, 97, 238, 0);
+    }
+
+    100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(67, 97, 238, 0);
+    }
+}
+
+/* Event Log */
+.event-log {
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    /* More modern mono font */
+    font-size: 0.85rem;
+    padding: 1rem;
+    background: #fafafa;
+    border-radius: 0 0 var(--border-radius) var(--border-radius);
+}
+
+.event-log .event-line {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f0f0;
+    border-radius: 4px;
+    margin-bottom: 2px;
+}
+
+.event-log .event-line:hover {
+    background-color: #f1f3f5;
+}
+
+.event-log .event-line.level-error {
+    color: #c0392b;
+    background-color: #fff5f5;
+    border-left: 3px solid #e74c3c;
+}
+
+.event-log .event-line.level-warn {
+    color: #d35400;
+    background-color: #fffbf0;
+    border-left: 3px solid #f39c12;
+}
+
+.event-log .event-line.level-info {
+    color: var(--text-main);
+}
+
+/* Config Tabs */
+#config-tabs {
+    position: sticky;
+    top: 80px;
+    /* Adjust based on navbar height */
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+}
+
+.list-group-item {
+    border: none;
+    border-radius: 8px !important;
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.list-group-item:hover {
+    background-color: #f1f3f5;
+    color: var(--text-main);
+}
+
+.list-group-item.active {
+    background-color: rgba(67, 97, 238, 0.1);
+    color: var(--primary-color);
+    border-color: transparent;
+}
+
+/* Status Badges */
+.badge {
+    font-weight: 500;
+    padding: 0.5em 0.8em;
+    border-radius: 6px;
+}
+
+.bg-primary {
+    background-color: var(--primary-color) !important;
+}
+
+.bg-success {
+    background-color: var(--success-color) !important;
+}
+
+.bg-danger {
+    background-color: var(--danger-color) !important;
+}
+
+.bg-warning {
+    background-color: var(--warning-color) !important;
+}
+
+.bg-info {
+    background-color: var(--info-color) !important;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Config form specific */
+.config-category-form {
+    display: none;
+}
+
+.config-category-form.active {
+    display: block;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
