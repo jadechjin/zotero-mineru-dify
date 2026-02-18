@@ -1,10 +1,10 @@
-/* dashboard.js — Dashboard view logic and polling */
+﻿/* dashboard.js - Dashboard view logic and polling */
 
 const Dashboard = {
     _taskId: null,
     _pollTimer: null,
     _lastSeq: 0,
-    _stageOrder: ['zotero_collect', 'mineru_upload', 'md_clean', 'smart_split', 'dify_upload'],
+    _stageOrder: ['zotero_collect', 'mineru_upload', 'md_clean', 'smart_split', 'dify_upload', 'dify_index'],
 
     init() {
         document.getElementById('btn-start').addEventListener('click', () => this.startPipeline());
@@ -12,6 +12,51 @@ const Dashboard = {
         document.getElementById('btn-check-zotero').addEventListener('click', () => this.checkZotero());
         document.getElementById('btn-select-zotero').addEventListener('click', () => this.openZoteroSelection());
         document.getElementById('btn-confirm-zotero-selection').addEventListener('click', () => this.confirmZoteroSelection());
+
+        this.refreshVisionSummaryHint();
+    },
+
+    async refreshVisionSummaryHint() {
+        const el = document.getElementById('vision-summary-hint');
+        if (!el) return;
+
+        try {
+            const resp = await Api.getConfig();
+            const cfg = resp.data || {};
+            const imageCfg = cfg.image_summary || {};
+
+            if (imageCfg.enabled === false) {
+                this._showHint(el, 'warning', '图像视觉分析未启用：图片摘要将跳过视觉模型，仅基于文本文证回写。');
+                return;
+            }
+
+            const hasApiKey = !!(imageCfg.api_key && String(imageCfg.api_key).trim());
+            const hasModel = !!(imageCfg.model && String(imageCfg.model).trim());
+            if (!hasApiKey || !hasModel) {
+                this._showHint(el, 'warning', '视觉模型未完整配置（API Key/Model）：图片摘要将使用文本回退模式。');
+                return;
+            }
+
+            this._hideHint(el);
+        } catch (err) {
+            this._showHint(el, 'warning', '无法读取图摘要配置，当前将按默认逻辑执行。');
+        }
+    },
+
+    _showHint(el, type, message) {
+        if (!el) return;
+        el.classList.remove('d-none', 'alert-info', 'alert-warning', 'alert-danger', 'alert-success');
+        if (type === 'info') el.classList.add('alert-info');
+        else if (type === 'danger') el.classList.add('alert-danger');
+        else if (type === 'success') el.classList.add('alert-success');
+        else el.classList.add('alert-warning');
+        el.textContent = message;
+    },
+
+    _hideHint(el) {
+        if (!el) return;
+        el.classList.add('d-none');
+        el.textContent = '';
     },
 
     async openZoteroSelection() {
@@ -30,56 +75,8 @@ const Dashboard = {
                 container.innerHTML = '<div class="text-center text-muted py-3">未找到分组或连接失败</div>';
                 return;
             }
+
             container.innerHTML = '';
-
-            // Helper to build tree
-            const renderTree = (items, level = 0) => {
-                for (const item of items) {
-                    const indent = level * 20;
-                    const el = document.createElement('label');
-                    el.className = 'list-group-item d-flex align-items-center gap-2';
-                    el.style.paddingLeft = `${indent + 12}px`;
-                    el.style.cursor = 'pointer';
-
-                    const checkbox = document.createElement('input');
-                    checkbox.className = 'form-check-input flex-shrink-0';
-                    checkbox.type = 'checkbox';
-                    checkbox.value = item.key;
-                    checkbox.dataset.name = item.name;
-
-                    // Check if currently selected
-                    const currentKeys = document.getElementById('collection-keys').value.split(',').map(k => k.trim());
-                    if (currentKeys.includes(item.key)) {
-                        checkbox.checked = true;
-                    }
-
-                    const span = document.createElement('span');
-                    span.textContent = item.name;
-
-                    el.appendChild(checkbox);
-                    el.appendChild(span);
-                    container.appendChild(el);
-
-                    if (item.children && item.children.length > 0) {
-                        renderTree(item.children, level + 1);
-                    }
-                }
-            };
-
-            // Build hierarchy from flat list if needed, or assume backend returns tree
-            // The backend returns a list, let's treat it as flat for now or assume backend handles tree structure.
-            // Backend `services/zotero_client.py` returns a flat list usually, but let's check `web/routes/zotero_api.py`.
-            // The `list_collections` in `zotero_client.py` seems to return a flat list.
-            // But usually Zotero collections have `parentCollection` field.
-            // Let's build a simple tree here if possible, or just list them.
-            // For simplicity and robustness, let's just list them flat with parent indication if available,
-            // OR relies on `services/zotero_client.py` to return them.
-            // Actually `list_collections` fetches all.
-            // Let's just render them flat for now, as tree building might be complex without seeing data.
-            // WAIT, `zotero_client.py`'s `list_collections` fetches all. 
-            // Let's just render them.
-
-            // To make it nicer, let's just render flat list sorted by name.
             collections.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
             for (const item of collections) {
@@ -102,20 +99,14 @@ const Dashboard = {
                 const name = document.createElement('span');
                 name.className = 'fw-medium';
                 name.textContent = item.name;
-                const key = document.createElement('small');
-                key.className = 'text-muted';
-                key.textContent = item.key;
-
                 content.appendChild(name);
-                // content.appendChild(key); // Optional: hide key to be cleaner
 
                 el.appendChild(checkbox);
                 el.appendChild(content);
                 container.appendChild(el);
             }
-
         } catch (err) {
-            container.innerHTML = `<div class="text-danger py-3">加载失败: ${err.message}</div>`;
+            container.innerHTML = `<div class="text-danger py-3">加载失败: ${Utils.escape(err.message)}</div>`;
         }
     },
 
@@ -123,10 +114,9 @@ const Dashboard = {
         const checkboxes = document.querySelectorAll('#zotero-collection-list input[type="checkbox"]:checked');
         const keys = Array.from(checkboxes).map(cb => cb.value);
         document.getElementById('collection-keys').value = keys.join(', ');
-        // Close modal
         const modalEl = document.getElementById('zotero-collection-modal');
         const modal = bootstrap.Modal.getInstance(modalEl);
-        modal.hide();
+        if (modal) modal.hide();
     },
 
     async startPipeline() {
@@ -134,6 +124,7 @@ const Dashboard = {
         const collectionKeys = keys ? keys.split(',').map(k => k.trim()).filter(Boolean) : [];
 
         try {
+            await this.refreshVisionSummaryHint();
             document.getElementById('btn-start').disabled = true;
             const resp = await Api.createTask(collectionKeys);
             this._taskId = resp.task_id;
@@ -192,6 +183,8 @@ const Dashboard = {
             this.updateStats(task.stats);
             this.updateStepper(task.stage, task.status);
             this.updateFiles(task.files || []);
+            this.updateRuntimeProgressHint(task);
+            this.updateImageAiRuntimeHint(task);
 
             const eventsResp = await Api.getEvents(this._taskId, this._lastSeq);
             const events = eventsResp.data || [];
@@ -212,6 +205,74 @@ const Dashboard = {
         }
     },
 
+    updateRuntimeProgressHint(task) {
+        const el = document.getElementById('runtime-progress-hint');
+        if (!el || !task) return;
+
+        const stage = task.stage;
+        const status = task.status;
+        const stats = task.stats || {};
+
+        if (status === 'running' && stage === 'dify_upload') {
+            this._showHint(el, 'info', 'Dify 上传中：文档正在提交，随后会进入入库处理。');
+            return;
+        }
+        if (status === 'running' && stage === 'dify_index') {
+            this._showHint(el, 'info', 'Dify 入库处理中：系统会在每个文件入库完成后逐个反馈结果。');
+            return;
+        }
+
+        if (['failed', 'partial_succeeded'].includes(status) && (stats.failed || 0) > 0) {
+            this._showHint(el, 'warning', '存在失败文件。可再次点击“开始流程”重试，已成功文件会自动跳过。');
+            return;
+        }
+
+        if (status === 'succeeded') {
+            this._showHint(el, 'success', '全部文件处理完成并已入库。');
+            return;
+        }
+
+        this._hideHint(el);
+    },
+
+    updateImageAiRuntimeHint(task) {
+        const el = document.getElementById('image-ai-runtime-hint');
+        if (!el || !task) return;
+
+        const imageAi = (task.stats || {}).image_ai;
+        if (!imageAi || typeof imageAi !== 'object') {
+            this._hideHint(el);
+            return;
+        }
+
+        if (imageAi.enabled === false) {
+            this._showHint(el, 'warning', '图像AI摘要未启用：本次图片摘要使用程序回退模式。');
+            return;
+        }
+
+        const totalImages = Number(imageAi.total_images || 0);
+        const attempted = Number(imageAi.ai_attempted || 0);
+        const succeeded = Number(imageAi.ai_succeeded || 0);
+        const failed = Number(imageAi.ai_failed || 0);
+        const fallback = Number(imageAi.fallback_used || 0);
+
+        if (totalImages === 0) {
+            this._hideHint(el);
+            return;
+        }
+
+        const msg = `图像AI摘要结果：检测 ${totalImages} 张，调用 ${attempted} 次，成功 ${succeeded}，失败 ${failed}，回退 ${fallback}。`;
+        if (failed > 0) {
+            this._showHint(el, 'warning', msg);
+            return;
+        }
+        if (attempted > 0) {
+            this._showHint(el, 'success', msg);
+            return;
+        }
+        this._showHint(el, 'info', `图像摘要检测到 ${totalImages} 张图片，但未调用视觉模型，已使用程序回退摘要。`);
+    },
+
     clearUI() {
         document.getElementById('stat-pending').textContent = '0';
         document.getElementById('stat-succeeded').textContent = '0';
@@ -223,6 +284,8 @@ const Dashboard = {
             s.className = 'step';
             s.querySelector('.step-icon').innerHTML = '&#9675;';
         });
+        this._hideHint(document.getElementById('runtime-progress-hint'));
+        this._hideHint(document.getElementById('image-ai-runtime-hint'));
     },
 
     updateStats(stats) {
@@ -233,7 +296,10 @@ const Dashboard = {
     },
 
     updateStepper(currentStage, taskStatus) {
-        const idx = this._stageOrder.indexOf(currentStage);
+        let idx = this._stageOrder.indexOf(currentStage);
+        if (idx < 0 && ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(taskStatus)) {
+            idx = this._stageOrder.length;
+        }
         document.querySelectorAll('.pipeline-stepper .step').forEach((step, i) => {
             step.className = 'step';
             const icon = step.querySelector('.step-icon');
@@ -275,16 +341,23 @@ const Dashboard = {
         const container = document.getElementById('file-list');
         container.innerHTML = '';
         for (const f of files) {
+            const stageText = Utils.formatStage ? Utils.formatStage(f.stage) : (f.stage || '-');
+            const retryTip = f.status === 'failed'
+                ? '<small class="text-warning d-block mt-1">可重试：再次启动流程会自动重试该失败文件</small>'
+                : '';
+
             const card = document.createElement('div');
             card.className = 'col';
             card.innerHTML = `
                 <div class="card file-card">
                     <div class="card-body py-2 px-3">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <span class="text-truncate" style="max-width:70%">${Utils.escape(f.filename)}</span>
+                        <div class="d-flex justify-content-between align-items-center gap-2">
+                            <span class="text-truncate" style="max-width:60%">${Utils.escape(f.filename)}</span>
                             ${Utils.formatStatus(f.status)}
                         </div>
-                        ${f.error ? `<small class="text-danger">${Utils.escape(f.error)}</small>` : ''}
+                        <small class="text-muted">阶段：${Utils.escape(stageText)}</small>
+                        ${f.error ? `<small class="text-danger d-block">${Utils.escape(f.error)}</small>` : ''}
+                        ${retryTip}
                     </div>
                 </div>`;
             container.appendChild(card);

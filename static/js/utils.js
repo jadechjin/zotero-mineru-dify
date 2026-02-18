@@ -1,4 +1,4 @@
-/* utils.js — toast notifications and helper functions */
+﻿/* utils.js - toast notifications and helper functions */
 
 const Utils = {
     showToast(message, type = 'info') {
@@ -47,7 +47,22 @@ const Utils = {
             processing: '<span class="badge bg-primary">处理中</span>',
             skipped: '<span class="badge bg-light text-dark">已跳过</span>',
         };
-        return map[status] || `<span class="badge bg-secondary">${status}</span>`;
+        return map[status] || `<span class="badge bg-secondary">${this.escape(status || '-')}</span>`;
+    },
+
+    formatStage(stage) {
+        const map = {
+            init: '初始化',
+            zotero_collect: '收集 Zotero',
+            mineru_upload: 'MinerU 上传',
+            mineru_poll: 'MinerU 轮询',
+            md_clean: 'Markdown 清洗',
+            smart_split: '智能分割',
+            dify_upload: 'Dify 上传',
+            dify_index: 'Dify 入库',
+            finalize: '收尾',
+        };
+        return map[stage] || stage || '-';
     },
 
     truncate(str, maxLen = 60) {

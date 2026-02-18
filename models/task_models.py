@@ -89,6 +89,7 @@ class Task:
     config_version: int = 0
     files: list[FileState] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
+    runtime_stats: dict = field(default_factory=dict)
     error: str = ""
     _seq_counter: int = field(default=0, repr=False)
 
@@ -112,6 +113,14 @@ class Task:
         succeeded = sum(1 for f in self.files if f.status == FileStatus.SUCCEEDED)
         failed = sum(1 for f in self.files if f.status == FileStatus.FAILED)
         pending = total - succeeded - failed
+        stats = {
+            "total": total,
+            "succeeded": succeeded,
+            "failed": failed,
+            "pending": pending,
+        }
+        if isinstance(self.runtime_stats, dict) and self.runtime_stats:
+            stats.update(self.runtime_stats)
         return {
             "task_id": self.task_id,
             "status": self.status.value,
@@ -122,12 +131,7 @@ class Task:
             "collection_keys": self.collection_keys,
             "config_version": self.config_version,
             "error": self.error,
-            "stats": {
-                "total": total,
-                "succeeded": succeeded,
-                "failed": failed,
-                "pending": pending,
-            },
+            "stats": stats,
         }
 
     def detail(self) -> dict:

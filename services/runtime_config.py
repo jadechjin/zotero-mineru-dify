@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from services.config_schema import (
+    CONFIG_SCHEMA,
     ENV_KEY_MAP,
     build_defaults,
     validate_and_coerce,
@@ -60,12 +61,21 @@ class RuntimeConfigProvider:
         """
         with self._lock:
             merged = json.loads(json.dumps(self._data))
+            current_masked = mask_sensitive(self._data)
             for category, fields in patch.items():
                 if not isinstance(fields, dict):
                     continue
                 if category not in merged:
                     merged[category] = {}
-                merged[category].update(fields)
+                schema_fields = CONFIG_SCHEMA.get(category, {})
+                for key, value in fields.items():
+                    spec = schema_fields.get(key, {})
+                    # Prevent masked echo (e.g. ****abcd) from overwriting real secret.
+                    if spec.get("sensitive") and isinstance(value, str):
+                        masked_existing = (current_masked.get(category, {}) or {}).get(key)
+                        if isinstance(masked_existing, str) and value == masked_existing:
+                            continue
+                    merged[category][key] = value
             validated = validate_and_coerce(merged)
             self._data = validated
             self._version += 1

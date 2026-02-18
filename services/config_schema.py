@@ -11,6 +11,7 @@ CONFIG_SCHEMA = {
         "api_token": {"type": "str", "default": "", "label": "API Token", "sensitive": True},
         "model_version": {"type": "select", "default": "vlm", "options": ["vlm", "doc"], "label": "解析模型版本", "sensitive": False},
         "poll_timeout_s": {"type": "int", "default": 7200, "min": 60, "max": 86400, "label": "轮询超时（秒）", "sensitive": False},
+        "asset_output_dir": {"type": "str", "default": "outputs/mineru_assets", "label": "图片资产输出目录", "sensitive": False},
     },
     "dify": {
         "api_key": {"type": "str", "default": "", "label": "Dataset API Key", "sensitive": True},
@@ -42,8 +43,20 @@ CONFIG_SCHEMA = {
         "remove_watermark": {"type": "bool", "default": False, "label": "移除水印", "sensitive": False},
         "watermark_patterns": {"type": "str", "default": "", "label": "水印正则（逗号分隔）", "sensitive": False},
     },
+    "image_summary": {
+        "enabled": {"type": "bool", "default": True, "label": "启用图摘要回写", "sensitive": False},
+        "api_base_url": {"type": "str", "default": "https://api.openai.com/v1", "label": "视觉模型 API Base URL", "sensitive": False},
+        "api_key": {"type": "str", "default": "", "label": "视觉模型 API Key", "sensitive": True},
+        "model": {"type": "str", "default": "gpt-4.1-mini", "label": "视觉模型名称", "sensitive": False},
+        "request_timeout_s": {"type": "int", "default": 120, "min": 10, "max": 600, "label": "请求超时（秒）", "sensitive": False},
+        "max_context_chars": {"type": "int", "default": 3000, "min": 500, "max": 20000, "label": "单图上下文最大字符", "sensitive": False},
+        "max_images_per_doc": {"type": "int", "default": 50, "min": 0, "max": 500, "label": "单文档最多处理图片数", "sensitive": False},
+        "max_tokens": {"type": "int", "default": 900, "min": 128, "max": 4000, "label": "视觉模型输出 Token 上限", "sensitive": False},
+        "temperature": {"type": "float", "default": 0.1, "min": 0, "max": 2, "label": "视觉模型温度", "sensitive": False},
+    },
     "smart_split": {
         "enabled": {"type": "bool", "default": True, "label": "启用智能分割", "sensitive": False},
+        "strategy": {"type": "select", "default": "paragraph_wrap", "options": ["paragraph_wrap", "semantic"], "label": "分割策略", "sensitive": False},
         "split_marker": {"type": "str", "default": "<!--split-->", "label": "分割标记", "sensitive": False},
         "max_length": {"type": "int", "default": 1200, "min": 200, "max": 10000, "label": "最大段落长度", "sensitive": False},
         "min_length": {"type": "int", "default": 300, "min": 50, "max": 5000, "label": "最小段落长度", "sensitive": False},
@@ -65,6 +78,7 @@ CATEGORY_LABELS = {
     "mineru": "MinerU",
     "dify": "Dify",
     "md_clean": "Markdown 清洗",
+    "image_summary": "图摘要回写",
     "smart_split": "智能分割",
 }
 
@@ -75,6 +89,7 @@ ENV_KEY_MAP = {
     "ZOTERO_COLLECTION_PAGE_SIZE": ("zotero", "collection_page_size"),
     "MINERU_API_TOKEN": ("mineru", "api_token"),
     "POLL_TIMEOUT_MINERU": ("mineru", "poll_timeout_s"),
+    "MINERU_ASSET_OUTPUT_DIR": ("mineru", "asset_output_dir"),
     "DIFY_API_KEY": ("dify", "api_key"),
     "DIFY_BASE_URL": ("dify", "base_url"),
     "DIFY_DATASET_NAME": ("dify", "dataset_name"),
@@ -101,11 +116,21 @@ ENV_KEY_MAP = {
     "MD_CLEAN_REMOVE_PAGE_NUMBERS": ("md_clean", "remove_page_numbers"),
     "MD_CLEAN_REMOVE_WATERMARK": ("md_clean", "remove_watermark"),
     "MD_CLEAN_WATERMARK_PATTERNS": ("md_clean", "watermark_patterns"),
+    "IMAGE_SUMMARY_ENABLED": ("image_summary", "enabled"),
+    "IMAGE_SUMMARY_API_BASE_URL": ("image_summary", "api_base_url"),
+    "IMAGE_SUMMARY_API_KEY": ("image_summary", "api_key"),
+    "IMAGE_SUMMARY_MODEL": ("image_summary", "model"),
+    "IMAGE_SUMMARY_TIMEOUT_S": ("image_summary", "request_timeout_s"),
+    "IMAGE_SUMMARY_MAX_CONTEXT_CHARS": ("image_summary", "max_context_chars"),
+    "IMAGE_SUMMARY_MAX_IMAGES_PER_DOC": ("image_summary", "max_images_per_doc"),
+    "IMAGE_SUMMARY_MAX_TOKENS": ("image_summary", "max_tokens"),
+    "IMAGE_SUMMARY_TEMPERATURE": ("image_summary", "temperature"),
+    "SMART_SPLIT_STRATEGY": ("smart_split", "strategy"),
 }
 
 
 def build_defaults():
-    """根据 schema 构建完整的默认配置。"""
+    """根据 schema 构建完整默认配置。"""
     defaults = {}
     for category, fields in CONFIG_SCHEMA.items():
         defaults[category] = {}
@@ -115,7 +140,7 @@ def build_defaults():
 
 
 def _coerce_value(value, spec):
-    """将字符串值转换为 schema 要求的类型。"""
+    """将输入值转换为 schema 定义的类型。"""
     field_type = spec["type"]
     if value is None or value == "":
         return spec["default"]

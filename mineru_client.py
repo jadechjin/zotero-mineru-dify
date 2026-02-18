@@ -1,6 +1,8 @@
 import io
 import logging
 import os
+import posixpath
+import re
 import time
 import zipfile
 
@@ -13,6 +15,9 @@ MINERU_BATCH_SIZE = 200
 MINERU_MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024
 MINERU_MODEL_VERSION = "vlm"
 POLL_INTERVAL_MINERU = 30
+MINERU_ASSET_OUTPUT_DIR = os.path.join("outputs", "mineru_assets")
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+_MASKED_TOKEN_RE = re.compile(r"^\*+[^\*]{4}$")
 
 
 def _build_headers(api_token):
@@ -21,6 +26,18 @@ def _build_headers(api_token):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_token}",
     }
+
+
+def _validate_api_token(api_token):
+    token = (api_token or "").strip()
+    if not token:
+        raise RuntimeError("MinerU API token is empty. Please set mineru.api_token first.")
+    if _MASKED_TOKEN_RE.fullmatch(token):
+        raise RuntimeError(
+            "MinerU API token looks masked (e.g. ****abcd). "
+            "Please re-enter the real token in Config or import it from .env."
+        )
+    return token
 
 
 def _validate_file_size(file_path):
@@ -44,9 +61,10 @@ def _request_upload_urls(file_entries, api_token, model_version="vlm"):
     Returns:
         (batch_id, file_urls) where file_urls is a list of pre-signed PUT URLs.
     """
+    token = _validate_api_token(api_token)
     resp = requests.post(
         f"{MINERU_BASE_URL}/file-urls/batch",
-        headers=_build_headers(api_token),
+        headers=_build_headers(token),
         json={"files": file_entries, "model_version": model_version},
         timeout=60,
     )
@@ -114,7 +132,7 @@ def upload_batch(cfg, file_items):
             failed_items = list of (task_key, error_msg) that failed.
             batch_id may be empty when all files fail local validation.
     """
-    api_token = cfg["mineru"]["api_token"]
+    api_token = _validate_api_token(cfg["mineru"]["api_token"])
     model_version = cfg["mineru"].get("model_version", "vlm")
 
     if len(file_items) > MINERU_BATCH_SIZE:
@@ -195,7 +213,7 @@ def poll_batch(cfg, batch_id, expected_count=None, expected_keys=None):
     Raises:
         TimeoutError: if batch does not finish within poll_timeout_s seconds.
     """
-    api_token = cfg["mineru"]["api_token"]
+    api_token = _validate_api_token(cfg["mineru"]["api_token"])
     poll_timeout = cfg["mineru"]["poll_timeout_s"]
 
     start = time.time()
@@ -252,10 +270,11 @@ def poll_batch(cfg, batch_id, expected_count=None, expected_keys=None):
         time.sleep(POLL_INTERVAL_MINERU)
 
 
-def download_markdown(results):
+def download_markdown(cfg, results):
     """Download zip results and extract markdown content.
 
     Args:
+        cfg: configuration dict.
         results: list of result dicts from poll_batch.
 
     Returns:
@@ -289,9 +308,14 @@ def download_markdown(results):
             logger.error("下载 zip 失败：%s，错误=%s", file_name, exc)
             continue
 
-        md_text = _extract_md_from_zip(zip_resp.content)
-        if md_text is not None:
-            successes[data_id] = {"text": md_text, "file_name": file_name}
+        extracted = _extract_md_and_assets_from_zip(zip_resp.content, cfg, data_id)
+        if extracted is not None:
+            successes[data_id] = {
+                "text": extracted["text"],
+                "file_name": file_name,
+                "image_assets": extracted.get("image_assets", []),
+                "mineru_asset_dir": extracted.get("asset_dir", ""),
+            }
         else:
             failures[data_id] = "no .md file found in zip"
             logger.warning("zip 中未找到 .md：%s", file_name)
@@ -299,16 +323,123 @@ def download_markdown(results):
     return successes, failures
 
 
-def _extract_md_from_zip(content_bytes):
-    """Extract the first .md file content from a zip archive."""
+def _extract_md_and_assets_from_zip(content_bytes, cfg, data_id):
+    """Extract markdown and image assets from a zip archive."""
     try:
         with zipfile.ZipFile(io.BytesIO(content_bytes)) as zf:
-            for name in zf.namelist():
-                if name.endswith(".md"):
-                    return zf.read(name).decode("utf-8")
+            file_names = [
+                name for name in zf.namelist()
+                if name and not name.endswith("/")
+            ]
+            md_name = next(
+                (name for name in file_names if name.lower().endswith(".md")),
+                None,
+            )
+            if not md_name:
+                return None
+
+            md_text = zf.read(md_name).decode("utf-8", errors="replace")
+            image_assets = _extract_image_assets(
+                zf=zf,
+                file_names=file_names,
+                md_name=md_name,
+                cfg=cfg,
+                data_id=data_id,
+            )
+            return {
+                "text": md_text,
+                "image_assets": image_assets,
+                "asset_dir": image_assets[0]["asset_dir"] if image_assets else "",
+            }
     except (zipfile.BadZipFile, Exception) as exc:
-        logger.error("解压 zip 失败：%s", exc)
+        logger.error("zip extract failed: %s", exc)
     return None
+
+
+def _extract_image_assets(zf, file_names, md_name, cfg, data_id):
+    """Persist image files and return metadata used for markdown rewrite."""
+    image_names = [name for name in file_names if _is_image_path(name)]
+    if not image_names:
+        return []
+
+    asset_root = _resolve_asset_output_dir(cfg)
+    safe_data_id = _sanitize_path_token(str(data_id))
+    target_root = os.path.abspath(os.path.join(asset_root, safe_data_id))
+    os.makedirs(target_root, exist_ok=True)
+
+    md_dir = posixpath.dirname(md_name)
+    assets = []
+
+    for name in image_names:
+        try:
+            relative_name = _normalize_relative_zip_path(name)
+            abs_path = _safe_join(target_root, relative_name)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+            with zf.open(name) as src, open(abs_path, "wb") as dst:
+                dst.write(src.read())
+
+            link_path = posixpath.relpath(name, md_dir or ".").replace("\\", "/")
+            assets.append(
+                {
+                    "asset_dir": target_root,
+                    "zip_path": name,
+                    "link_path": link_path,
+                    "file_name": os.path.basename(name),
+                    "saved_path": abs_path,
+                }
+            )
+        except Exception as exc:
+            logger.warning("save image asset failed: %s, error=%s", name, exc)
+
+    if assets:
+        logger.info(
+            "image assets kept: data_id=%s, count=%d, dir=%s",
+            data_id,
+            len(assets),
+            target_root,
+        )
+    return assets
+
+
+def _resolve_asset_output_dir(cfg):
+    mineru_cfg = cfg.get("mineru", {})
+    raw_dir = str(mineru_cfg.get("asset_output_dir", MINERU_ASSET_OUTPUT_DIR) or "").strip()
+    if not raw_dir:
+        raw_dir = MINERU_ASSET_OUTPUT_DIR
+    return os.path.abspath(raw_dir)
+
+
+def _normalize_relative_zip_path(path_text):
+    path_text = (path_text or "").replace("\\", "/").strip()
+    normalized = posixpath.normpath(path_text).lstrip("/")
+    while normalized.startswith("../"):
+        normalized = normalized[3:]
+    return normalized or "unnamed"
+
+
+def _safe_join(base_dir, relative_path):
+    base_abs = os.path.abspath(base_dir)
+    joined = os.path.abspath(os.path.join(base_abs, relative_path))
+    prefix = base_abs + os.sep
+    if not (joined == base_abs or joined.startswith(prefix)):
+        raise ValueError(f"illegal zip path: {relative_path}")
+    return joined
+
+
+def _is_image_path(path_text):
+    ext = os.path.splitext(path_text or "")[1].lower()
+    return ext in _IMAGE_EXTENSIONS
+
+
+def _sanitize_path_token(text):
+    cleaned = []
+    for ch in text:
+        if ch.isalnum() or ch in {"-", "_", "."}:
+            cleaned.append(ch)
+        else:
+            cleaned.append("_")
+    return "".join(cleaned).strip("._") or "unknown"
 
 
 def process_files(cfg, file_map):
@@ -362,7 +493,7 @@ def process_files(cfg, file_map):
                 expected_count=len(uploaded),
                 expected_keys=expected_keys,
             )
-            successes, failures = download_markdown(results)
+            successes, failures = download_markdown(cfg, results)
         except Exception as exc:
             logger.error("批次 %d 轮询/下载失败：%s", batch_num, exc)
             for _, key in uploaded:

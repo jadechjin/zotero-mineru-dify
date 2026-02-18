@@ -24,5 +24,9 @@ function switchView(view) {
 
     if (view === 'config') {
         Config.load();
+    } else if (view === 'dashboard') {
+        if (typeof Dashboard.refreshVisionSummaryHint === 'function') {
+            Dashboard.refreshVisionSummaryHint();
+        }
     }
 }

@@ -1,6 +1,7 @@
 """Zotero -> MinerU -> Dify 自动化流水线（旧 CLI 入口）。"""
 
 import argparse
+from collections import defaultdict
 import logging
 import os
 import sys
@@ -24,6 +25,15 @@ from config import (
     DIFY_SUBCHUNK_OVERLAP,
     DIFY_SUBCHUNK_SEPARATOR,
     DIFY_UPLOAD_DELAY,
+    IMAGE_SUMMARY_API_BASE_URL,
+    IMAGE_SUMMARY_API_KEY,
+    IMAGE_SUMMARY_ENABLED,
+    IMAGE_SUMMARY_MAX_CONTEXT_CHARS,
+    IMAGE_SUMMARY_MAX_IMAGES_PER_DOC,
+    IMAGE_SUMMARY_MAX_TOKENS,
+    IMAGE_SUMMARY_MODEL,
+    IMAGE_SUMMARY_TEMPERATURE,
+    IMAGE_SUMMARY_TIMEOUT_S,
     MD_CLEAN_COLLAPSE_BLANK_LINES,
     MD_CLEAN_ENABLED,
     MD_CLEAN_REMOVE_CONTROL_CHARS,
@@ -33,7 +43,11 @@ from config import (
     MD_CLEAN_STRIP_HTML,
     MD_CLEAN_WATERMARK_PATTERNS,
     MINERU_API_TOKEN,
+    MINERU_ASSET_OUTPUT_DIR,
     POLL_TIMEOUT_MINERU,
+    SMART_SPLIT_ENABLED,
+    SMART_SPLIT_MARKER,
+    SMART_SPLIT_STRATEGY,
     ZOTERO_COLLECTION_KEYS,
     ZOTERO_COLLECTION_PAGE_SIZE,
     ZOTERO_COLLECTION_RECURSIVE,
@@ -73,6 +87,7 @@ def _build_cfg_from_env():
         "mineru": {
             "api_token": MINERU_API_TOKEN,
             "poll_timeout_s": POLL_TIMEOUT_MINERU,
+            "asset_output_dir": MINERU_ASSET_OUTPUT_DIR,
         },
         "dify": {
             "api_key": DIFY_API_KEY,
@@ -104,8 +119,21 @@ def _build_cfg_from_env():
             "remove_watermark": MD_CLEAN_REMOVE_WATERMARK,
             "watermark_patterns": MD_CLEAN_WATERMARK_PATTERNS,
         },
+        "image_summary": {
+            "enabled": IMAGE_SUMMARY_ENABLED,
+            "api_base_url": IMAGE_SUMMARY_API_BASE_URL,
+            "api_key": IMAGE_SUMMARY_API_KEY,
+            "model": IMAGE_SUMMARY_MODEL,
+            "request_timeout_s": IMAGE_SUMMARY_TIMEOUT_S,
+            "max_context_chars": IMAGE_SUMMARY_MAX_CONTEXT_CHARS,
+            "max_images_per_doc": IMAGE_SUMMARY_MAX_IMAGES_PER_DOC,
+            "max_tokens": IMAGE_SUMMARY_MAX_TOKENS,
+            "temperature": IMAGE_SUMMARY_TEMPERATURE,
+        },
         "smart_split": {
-            "enabled": False,
+            "enabled": SMART_SPLIT_ENABLED,
+            "strategy": SMART_SPLIT_STRATEGY,
+            "split_marker": SMART_SPLIT_MARKER,
         },
     }
 
@@ -322,6 +350,82 @@ def _reconcile_processed_records_with_remote(progress, dataset_id, remote_name_i
         progress["processed"].pop(key, None)
 
     return len(stale_keys), "name-index"
+
+
+def _resolve_parent_task_key(md_results, item_key):
+    data = md_results.get(item_key) if isinstance(md_results, dict) else None
+    parent = ""
+    if isinstance(data, dict):
+        parent = str(data.get("parent_task_key") or "")
+    base = parent or str(item_key or "")
+    return base.split("#", 1)[0]
+
+
+def _build_parent_part_totals(md_results):
+    totals = defaultdict(int)
+    for item_key in (md_results or {}).keys():
+        parent_key = _resolve_parent_task_key(md_results, item_key)
+        if parent_key:
+            totals[parent_key] += 1
+    return dict(totals)
+
+
+def _resolve_parent_file_name(md_results, parent_key):
+    for item_key, data in (md_results or {}).items():
+        if _resolve_parent_task_key(md_results, item_key) != parent_key:
+            continue
+        if isinstance(data, dict):
+            source_name = str(data.get("source_file_name") or "").strip()
+            if source_name:
+                return source_name
+            file_name = str(data.get("file_name") or "").strip()
+            if file_name:
+                return file_name
+    return parent_key
+
+
+def _clear_parent_progress_entries(progress_bucket, parent_key):
+    if not isinstance(progress_bucket, dict) or not parent_key:
+        return
+    prefix = f"{parent_key}#part"
+    to_delete = []
+    for key in list(progress_bucket.keys()):
+        key_str = str(key)
+        if key_str == parent_key or key_str.startswith(prefix):
+            to_delete.append(key)
+    for key in to_delete:
+        progress_bucket.pop(key, None)
+
+
+def _aggregate_parent_upload_outcomes(uploaded_keys, failed_keys, md_results, parent_part_totals):
+    uploaded_parts = defaultdict(set)
+    failed_parents = set()
+
+    for key in uploaded_keys or []:
+        parent = _resolve_parent_task_key(md_results, key)
+        if parent:
+            uploaded_parts[parent].add(key)
+
+    for key in failed_keys or []:
+        parent = _resolve_parent_task_key(md_results, key)
+        if parent:
+            failed_parents.add(parent)
+
+    candidate_parents = set(parent_part_totals.keys())
+    candidate_parents.update(uploaded_parts.keys())
+    candidate_parents.update(failed_parents)
+
+    succeeded = set()
+    for parent in candidate_parents:
+        if parent in failed_parents:
+            continue
+        expected_parts = int(parent_part_totals.get(parent, 1))
+        if len(uploaded_parts.get(parent, set())) >= expected_parts:
+            succeeded.add(parent)
+        else:
+            failed_parents.add(parent)
+
+    return succeeded, failed_parents
 
 
 def main():

@@ -140,16 +140,28 @@ const Config = {
             if (!el.dataset.key) return;
             const cat = el.dataset.category;
             const key = el.dataset.key;
-            if (!result[cat]) result[cat] = {};
 
             const ft = el.dataset.fieldType;
             if (ft === 'bool') {
+                if (!result[cat]) result[cat] = {};
                 result[cat][key] = el.checked;
             } else if (ft === 'int') {
+                if (!result[cat]) result[cat] = {};
                 result[cat][key] = parseInt(el.value, 10) || 0;
             } else if (ft === 'float') {
+                if (!result[cat]) result[cat] = {};
                 result[cat][key] = parseFloat(el.value) || 0;
             } else {
+                const value = (el.value || '').trim();
+                // Sensitive fields are returned masked by backend.
+                // Keep existing secret when user leaves it unchanged.
+                if (el.type === 'password') {
+                    const looksMasked = /^\*{4,}.{4}$/.test(value);
+                    if (!value || looksMasked) {
+                        return;
+                    }
+                }
+                if (!result[cat]) result[cat] = {};
                 result[cat][key] = el.value;
             }
         });

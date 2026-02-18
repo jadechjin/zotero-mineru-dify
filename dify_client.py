@@ -659,7 +659,18 @@ def wait_for_indexing(cfg, dataset_id, batch, max_wait=None):
     return False
 
 
-def upload_all(cfg, dataset_id, md_results, dataset_info=None):
+
+
+def _emit_upload_progress(progress_callback, **payload):
+    """Best-effort callback dispatch for upload/index progress events."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(payload)
+    except Exception as exc:
+        logger.warning("upload progress callback failed: %s", exc)
+
+def upload_all(cfg, dataset_id, md_results, dataset_info=None, progress_callback=None):
     """上传全部 Markdown 文本到 Dify。"""
     dify_cfg = cfg.get("dify", {})
     upload_delay = dify_cfg.get("upload_delay", 1)
@@ -699,8 +710,24 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None):
         )
         if batch:
             pending_batches[item_key] = batch
+            _emit_upload_progress(
+                progress_callback,
+                phase="submit_ok",
+                item_key=item_key,
+                batch=batch,
+                success=True,
+                message=f"Dify submit accepted: {data['file_name']}",
+            )
         else:
             failed.append(item_key)
+            _emit_upload_progress(
+                progress_callback,
+                phase="submit_failed",
+                item_key=item_key,
+                batch="",
+                success=False,
+                message=f"Dify submit failed: {data['file_name']}",
+            )
         time.sleep(upload_delay)
 
     logger.info("Dify submit: %d 接受, %d 拒绝", len(pending_batches), len(failed))
@@ -709,12 +736,36 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None):
         len(pending_batches),
         index_max_wait,
     )
+    _emit_upload_progress(
+        progress_callback,
+        phase="index_wait_begin",
+        item_key="",
+        batch="",
+        success=True,
+        message=f"Waiting Dify indexing for {len(pending_batches)} file(s)",
+    )
 
     for item_key, batch in pending_batches.items():
         if wait_for_indexing(cfg, dataset_id, batch):
             uploaded.append(item_key)
+            _emit_upload_progress(
+                progress_callback,
+                phase="index_ok",
+                item_key=item_key,
+                batch=batch,
+                success=True,
+                message=f"Dify indexing completed: {item_key}",
+            )
         else:
             failed.append(item_key)
-            logger.error("索引失败：条目 %s, 批次=%s", item_key, batch)
+            logger.error("dify indexing failed: item=%s, batch=%s", item_key, batch)
+            _emit_upload_progress(
+                progress_callback,
+                phase="index_failed",
+                item_key=item_key,
+                batch=batch,
+                success=False,
+                message=f"Dify indexing failed: {item_key}",
+            )
 
     return uploaded, failed
