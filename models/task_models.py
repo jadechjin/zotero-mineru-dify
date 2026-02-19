@@ -27,9 +27,6 @@ class Stage(str, Enum):
     FINALIZE = "finalize"
 
 
-STAGE_ORDER = list(Stage)
-
-
 class FileStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"

@@ -20,7 +20,7 @@ Zotero-MinerU-Dify Pipeline 是一个文献知识库自动化工具，将 Zotero
 
 ### CLI -> Web Migration (v2.0)
 
-Original: CLI tool (`pipeline.py`) with `.env` configuration.
+Original: CLI tool (`pipeline.py`) with `.env` configuration — **removed in v2.1 dead code cleanup**.
 
 Current: Flask Web application (`app.py`) with:
 - **RuntimeConfigProvider** — JSON-persisted config with hot-update semantics
@@ -48,4 +48,3 @@ Borrowed from VerbaAurea project's text analysis approach, adapted from DOCX to 
 | Entry | File | Usage |
 |-------|------|-------|
 | Web UI | `app.py` | `python app.py` -> http://127.0.0.1:5000 |
-| Legacy CLI | `pipeline.py` | `python pipeline.py [--collections KEY1,KEY2]` |

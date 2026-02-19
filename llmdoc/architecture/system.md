@@ -7,7 +7,7 @@ app.py (Flask Entry)
 ├── services/runtime_config.py     [RuntimeConfigProvider]
 │   └── services/config_schema.py  [CONFIG_SCHEMA, validate_and_coerce, mask_sensitive]
 ├── services/task_manager.py       [TaskManager]
-│   └── models/task_models.py      [Task, FileState, Event, enums]
+│   └── models/task_models.py      [Task, FileState, Event, Stage, enums]
 ├── services/pipeline_runner.py    [run_pipeline]
 │   ├── zotero_client.py           [check_connection, collect_files]
 │   ├── mineru_client.py           [process_files]
@@ -65,15 +65,9 @@ Flask (main thread)
 
 ## Config Injection Pattern
 
-All client modules follow the same pattern:
+All client modules accept `cfg: dict` parameter instead of module-level imports:
 
 ```python
-# Before (v1):
-from config import DIFY_API_KEY, DIFY_BASE_URL
-def some_function():
-    requests.get(f"{DIFY_BASE_URL}/...", headers={"Authorization": f"Bearer {DIFY_API_KEY}"})
-
-# After (v2):
 def some_function(cfg):
     dify_cfg = cfg.get("dify", {})
     base_url = dify_cfg.get("base_url", "")

@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 MINERU_BASE_URL = "https://mineru.net/api/v4"
 MINERU_BATCH_SIZE = 200
 MINERU_MAX_FILE_SIZE_BYTES = 200 * 1024 * 1024
-MINERU_MODEL_VERSION = "vlm"
 POLL_INTERVAL_MINERU = 30
 MINERU_ASSET_OUTPUT_DIR = os.path.join("outputs", "mineru_assets")
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}

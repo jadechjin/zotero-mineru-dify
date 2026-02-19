@@ -373,11 +373,6 @@ def get_dataset_document_name_index(cfg, dataset_id):
     }
 
 
-def get_dataset_doc_form(cfg, dataset_id):
-    """兼容旧接口：仅返回 doc_form。"""
-    return get_dataset_info(cfg, dataset_id).get("doc_form", "")
-
-
 def get_or_create_dataset(cfg):
     """严格使用配置中的知识库名，不会自动创建新知识库。"""
     dify_cfg = cfg.get("dify", {})

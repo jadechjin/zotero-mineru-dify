@@ -4,7 +4,6 @@ import json
 import os
 import tempfile
 import threading
-from pathlib import Path
 
 from services.config_schema import (
     CONFIG_SCHEMA,

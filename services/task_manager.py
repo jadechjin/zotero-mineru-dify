@@ -5,9 +5,6 @@ import threading
 from typing import Callable
 
 from models.task_models import (
-    FileState,
-    FileStatus,
-    Stage,
     Task,
     TaskStatus,
 )
