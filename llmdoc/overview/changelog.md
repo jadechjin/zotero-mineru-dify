@@ -1,5 +1,94 @@
 # Architecture Change Log
 
+## v2.3 — Dify Upload Flow Simplification (Planned)
+
+### Summary
+
+Simplification of Dify upload pipeline to remove entry indexing polling. Files are considered complete upon successful submission to Dify, eliminating the `wait_for_indexing()` blocking phase. This streamlines the user experience by providing immediate upload confirmation without waiting for Dify's background indexing to complete.
+
+### Rationale
+
+- **User Intent**: Users want immediate feedback after file upload succeeds, not to wait for indexing
+- **Progress Semantics**: `progress["processed"]` changes from "indexed in Dify" to "uploaded to Dify"
+- **Pipeline Simplification**: Removes `dify_index` stage or converts it to no-op; pipeline terminates after `dify_upload`
+
+### Planned Changes
+
+#### Backend Changes
+
+| File | Change |
+|------|--------|
+| `dify_client.py` | Remove `wait_for_indexing()` call from `upload_all()` |
+| `services/pipeline_runner.py` | Remove/simplify `dify_index` stage; update progress callbacks to remove `index_*` events |
+| `models/task_models.py` | Decide on `Stage.DIFY_INDEX` retention (keep as no-op or remove) |
+
+#### Frontend Changes
+
+| File | Change |
+|------|--------|
+| `static/js/dashboard.js` | Remove `dify_index` from stepper; remove index-related progress hints |
+| `templates/index.html` | Remove `dify_index` step from stepper UI |
+
+#### Documentation Updates
+
+| File | Change |
+|------|--------|
+| `llmdoc/architecture/system.md` | Update pipeline stages flow diagram; update Data Flow section |
+| `llmdoc/reference/api-endpoints.md` | Update Stage enum documentation |
+
+### Success Criteria
+
+- [OK-1] File upload to Dify (submit_ok) immediately shows success status on frontend without waiting for indexing
+- [OK-2] Failed uploads (submit_failed) immediately show failure status with reason
+- [OK-3] All files upload completion triggers finalize and task ends without blocking on indexing
+- [OK-4] `progress.json` `processed` field records timestamp upon upload success (not indexing completion)
+- [OK-5] Frontend stepper no longer displays `dify_index` step
+- [OK-6] Re-running pipeline correctly skips already uploaded files
+- [OK-7] Partial upload failures result in `partial_succeeded` status; failed files can retry on next run
+- [OK-8] Pipeline end event log includes hint: "Files submitted to Dify. Check indexing status in Dify console"
+
+### Research Reference
+
+Team research document: `.claude/team-plan/dify-upload-ux-research.md`
+
+---
+
+## v2.2 — Service Connectivity Testing (2026-02-21)
+
+### Summary
+
+Added connectivity testing for all 4 external services (Zotero, MinerU, Dify, Vision Model API). Users can now verify service configuration directly from the config page before running the pipeline.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `web/routes/services_api.py` | Blueprint with 3 health check endpoints (MinerU, Dify, Image Summary) |
+
+### New Functions
+
+| File | Function | Purpose |
+|------|----------|---------|
+| `mineru_client.py` | `check_connection(cfg)` | Empty batch request to verify token and connectivity |
+| `dify_client.py` | `check_connection(cfg)` | `GET /datasets?limit=1` to verify API key and connectivity |
+| `md_cleaner.py` | `check_vision_connection(cfg)` | `GET /models` with chat completion fallback |
+| `md_cleaner.py` | `_check_vision_via_chat()` | Minimal chat completion for providers without /models |
+
+### API Changes
+
+- New: `GET /api/v1/mineru/health`, `GET /api/v1/dify/health`, `GET /api/v1/image-summary/health`
+- Updated: `GET /api/v1/zotero/health` now includes `message` field
+- Unified response format: `{"success": true, "connected": bool, "message": str}`
+
+### Frontend Changes
+
+- `static/js/api.js`: Added `checkMinerU()`, `checkDify()`, `checkImageSummary()` methods
+- `static/js/config.js`: Added connectivity test buttons in config panels for zotero/mineru/dify/image_summary categories
+
+### Security Fix
+
+- `config/runtime_config.json` removed from git tracking and added to `.gitignore`
+
 ## v2.1 — Dead Code Cleanup (2026-02-19)
 
 ### Summary
