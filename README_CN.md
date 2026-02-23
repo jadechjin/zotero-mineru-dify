@@ -36,7 +36,7 @@
 
 - **Web 仪表盘** — 实时查看流水线进度，支持按文件追踪，轮询式事件流
 - **前端配置管理** — 在浏览器中编辑所有设置（API 密钥、分段规则、分割参数），持久化为 JSON
-- **智能分割** — 借鉴 [VerbaAurea](https://github.com/VerbaAurea/VerbaAurea) 的语义感知 Markdown 分割：标题检测、句子边界分析（jieba + NLTK）、多维度评分系统
+- **智能分割** — 借鉴 [VerbaAurea](https://github.com/AEPAX/VerbaAurea) 的语义感知 Markdown 分割：标题检测、句子边界分析（jieba + NLTK）、多维度评分系统
 - **图片摘要回写** — 基于视觉 API 的图片描述生成，将图片占位符替换为上下文相关的文本摘要
 - **全链路自动化** — 一键完成从 Zotero 文献库到 Dify 知识库的全流程
 - **幂等执行** — 通过 Dify 远程数据集比对实现跳过逻辑，可安全重复运行且不产生重复
@@ -52,13 +52,13 @@
 | 依赖 | 版本 | 备注 |
 |------|------|------|
 | Python | 3.10+ | |
-| Zotero | 7.0+ | 需安装 [zotero-mcp](https://github.com/nicholasgasior/zotero-mcp) 插件并运行 |
+| Zotero | 7.0+ | 需安装 [zotero-mcp](https://github.com/cookjohn/zotero-mcp)插件并运行 |
 | MinerU API Token | - | 在 [mineru.net](https://mineru.net) 注册获取 |
-| Dify API Key | - | 从 Dify 实例获取 Dataset API Key |
+| Dify API Key | - | 从 Dify 获取 Dataset API Key |
 
 ## 使用教程
 
-首先确保电脑中已经下载安装有：Python 3.10+、Zotero（需要安装 [zotero-mcp](https://github.com/nicholasgasior/zotero-mcp)）
+首先确保电脑中已经下载安装有：Python 3.10+、Zotero（需要安装 [zotero-mcp](https://github.com/cookjohn/zotero-mcp)）
 
 ### 准备工作——Dify
 
@@ -70,7 +70,7 @@
 
 ![image-20260214170301138](images/170258.png)
 
-找到用户输入字段点击预览，必填的处理文档参数如下：
+找到用户输入字段点击预览，必填的处理文档参数如下（<span style="font-weight:bold;">分割字符改为<!--split--></span>）：
 
 ![image-20260214170525878](images/170446.png)
 
