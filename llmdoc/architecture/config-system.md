@@ -8,13 +8,13 @@ The config system replaces `.env` file configuration with a JSON-persisted, fron
 
 ### CONFIG_SCHEMA (`services/config_schema.py`)
 
-Defines 5 categories with ~32 fields total:
+Defines 5 categories with ~31 fields total:
 
 | Category | Key Fields |
 |----------|-----------|
 | `zotero` | mcp_url, collection_keys, collection_recursive, collection_page_size |
 | `mineru` | api_token, poll_timeout_s |
-| `dify` | api_key, base_url, dataset_name, pipeline_file, process_mode, segment_separator, segment_max_tokens, chunk_overlap, parent_mode, subchunk_*, remove_*, index_max_wait_s, doc_form, doc_language, upload_delay |
+| `dify` | api_key, base_url, dataset_name, pipeline_file, process_mode, segment_separator, segment_max_tokens, chunk_overlap, parent_mode, subchunk_*, remove_*, doc_form, doc_language, upload_delay |
 | `md_clean` | enabled, collapse_blank_lines, strip_html, remove_control_chars, remove_image_placeholders, remove_page_numbers, remove_watermark, watermark_patterns |
 | `smart_split` | enabled, split_marker, max_length, min_length, min_split_score, heading_score_bonus, sentence_end_score_bonus, sentence_integrity_weight, length_score_factor, search_window, heading_after_penalty, force_split_before_heading, heading_cooldown_elements, custom_heading_regex |
 
@@ -42,7 +42,7 @@ Key behaviors:
 
 ### ENV_KEY_MAP (`services/config_schema.py`)
 
-Maps 32 `.env` variable names to `(category, key)` tuples for import:
+Maps 35 `.env` variable names to `(category, key)` tuples for import:
 
 ```python
 ENV_KEY_MAP = {

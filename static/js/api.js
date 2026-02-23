@@ -33,7 +33,13 @@ const Api = {
     getEvents(id, afterSeq) { return this.request('GET', `/tasks/${id}/events?after_seq=${afterSeq}`); },
     getFiles(id) { return this.request('GET', `/tasks/${id}/files`); },
     cancelTask(id) { return this.request('POST', `/tasks/${id}/cancel`); },
+    skipFile(taskId, filename) {
+        return this.request('POST', `/tasks/${taskId}/files/${encodeURIComponent(filename)}/skip`);
+    },
 
     checkZotero() { return this.request('GET', '/zotero/health'); },
+    checkMinerU() { return this.request('GET', '/mineru/health'); },
+    checkDify() { return this.request('GET', '/dify/health'); },
+    checkImageSummary() { return this.request('GET', '/image-summary/health'); },
     getCollections() { return this.request('GET', '/zotero/collections'); },
 };

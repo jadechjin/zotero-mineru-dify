@@ -37,13 +37,15 @@
 - **Web 仪表盘** — 实时查看流水线进度，支持按文件追踪，轮询式事件流
 - **前端配置管理** — 在浏览器中编辑所有设置（API 密钥、分段规则、分割参数），持久化为 JSON
 - **智能分割** — 借鉴 [VerbaAurea](https://github.com/VerbaAurea/VerbaAurea) 的语义感知 Markdown 分割：标题检测、句子边界分析（jieba + NLTK）、多维度评分系统
+- **图片摘要回写** — 基于视觉 API 的图片描述生成，将图片占位符替换为上下文相关的文本摘要
 - **全链路自动化** — 一键完成从 Zotero 文献库到 Dify 知识库的全流程
-- **幂等执行** — 基于 JSON 状态文件的进度追踪，可安全重复运行
+- **幂等执行** — 通过 Dify 远程数据集比对实现跳过逻辑，可安全重复运行且不产生重复
+- **文件级跳过** — 运行中可在仪表盘跳过单个文件，无需取消整个任务
+- **服务连通性测试** — 在配置页面一键验证 Zotero、MinerU、Dify、视觉 API 的连接状态
 - **批量处理** — 每个 MinerU 批次最多处理 200 个文件
 - **分类筛选** — 支持指定 Zotero 分类（Collection），递归包含子分类
 - **Pipeline 文件支持** — 自动发现 Dify 导出的 `.pipeline` 文件，自动应用分段配置
 - **多格式支持** — PDF、DOC、DOCX、PPT、PPTX、PNG、JPG、JPEG
-- **旧版 CLI** — `pipeline.py` 仍可用于无界面/脚本化使用
 
 ## 前置条件
 
@@ -107,32 +109,13 @@ python app.py
 
 ## 使用方法
 
-### Web 界面（推荐）
-
 1. 在浏览器中打开 `http://127.0.0.1:5000`
 2. 进入 **配置** 页面 — 填写 API 密钥（Zotero MCP 地址、MinerU Token、Dify API Key、知识库名称）
-3. 按需调整智能分割和 Markdown 清洗设置
-4. 进入 **仪表盘** — 输入 Zotero 分组 Key（可选），点击 **启动流水线**
-5. 实时监控进度：流水线阶段步进条、事件日志、逐文件状态
-
-### 旧版命令行
-
-```bash
-# 交互模式 - 从菜单选择分类
-python pipeline.py --interactive
-
-# 处理整个 Zotero 文献库
-python pipeline.py --all-items
-
-# 处理指定分类
-python pipeline.py --collections KEY1,KEY2
-
-# 不递归包含子分类
-python pipeline.py --collections KEY1 --no-recursive
-
-# 自定义分页大小
-python pipeline.py --all-items --page-size 100
-```
+3. 使用 **连通性测试** 按钮验证各服务连接
+4. 按需调整智能分割、Markdown 清洗和图片摘要设置
+5. 进入 **仪表盘** — 输入 Zotero 分组 Key（可选），点击 **启动流水线**
+6. 实时监控进度：流水线阶段步进条、事件日志、逐文件状态
+7. 运行中可随时 **跳过** 不需要的文件
 
 ## 配置说明
 
@@ -140,11 +123,11 @@ python pipeline.py --all-items --page-size 100
 
 所有设置都可以在配置页面编辑。修改保存到 `config/runtime_config.json`，下次运行流水线时生效。
 
-配置分类：**Zotero** | **MinerU** | **Dify** | **Markdown 清洗** | **智能分割**
+配置分类：**Zotero** | **MinerU** | **Dify** | **Markdown 清洗** | **图片摘要** | **智能分割**
 
-### 环境变量（旧版）
+### 环境变量
 
-命令行使用时，通过 `.env` 文件配置。完整模板见 `.env.example`。Web 界面可通过「从 .env 导入」按钮导入旧配置。
+初始设置或迁移时，通过 `.env` 文件配置。完整模板见 `.env.example`。Web 界面可通过「从 .env 导入」按钮导入配置。
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
@@ -162,8 +145,6 @@ python pipeline.py --all-items --page-size 100
 ```
 zotero-mineru-dify/
 ├── app.py                          # Flask 入口（Web 界面）
-├── pipeline.py                     # 旧版 CLI 入口
-├── config.py                       # 旧版 .env 配置加载
 │
 ├── models/
 │   └── task_models.py              # Task, FileState, Event 数据模型
@@ -172,8 +153,7 @@ zotero-mineru-dify/
 │   ├── config_schema.py            # 配置 schema、默认值、校验
 │   ├── runtime_config.py           # RuntimeConfigProvider（JSON 持久化）
 │   ├── task_manager.py             # 线程安全的任务生命周期管理
-│   ├── pipeline_runner.py          # 后台线程流水线执行
-│   └── event_bus.py                # 事件发布/订阅总线
+│   └── pipeline_runner.py          # 后台线程流水线执行
 │
 ├── splitter/                       # 智能分割模块（借鉴 VerbaAurea）
 │   ├── md_element_extractor.py     # Markdown → MDElement[] 解析器
@@ -184,12 +164,12 @@ zotero-mineru-dify/
 │   └── pipeline.py                 # 编排 5 个子模块
 │
 ├── web/
-│   ├── errors.py                   # 错误响应工具
 │   └── routes/
 │       ├── health.py               # GET /api/v1/health
 │       ├── config_api.py           # 配置 CRUD API
 │       ├── tasks_api.py            # 任务管理 API
-│       └── zotero_api.py           # Zotero 代理 API
+│       ├── zotero_api.py           # Zotero 代理 API
+│       └── services_api.py         # 服务健康检查 API
 │
 ├── templates/
 │   └── index.html                  # SPA 主页（Bootstrap 5）
@@ -205,10 +185,12 @@ zotero-mineru-dify/
 ├── zotero_client.py                # Zotero MCP 客户端
 ├── mineru_client.py                # MinerU API 客户端
 ├── dify_client.py                  # Dify API 客户端
-├── md_cleaner.py                   # Markdown 清洗流水线
-├── progress.py                     # JSON 进度追踪
+├── md_cleaner.py                   # Markdown 清洗 + 图片摘要
 ├── requirements.txt                # Python 依赖
 ├── .env.example                    # 环境变量模板
+├── docs/
+│   ├── CONTRIB.md                  # 开发贡献指南
+│   └── RUNBOOK.md                  # 运维手册
 └── config/
     └── runtime_config.json         # 运行时配置（自动生成）
 ```
@@ -229,18 +211,27 @@ zotero-mineru-dify/
 | GET | `/api/v1/tasks/:id/events?after_seq=N` | 获取增量事件 |
 | GET | `/api/v1/tasks/:id/files` | 获取逐文件状态 |
 | POST | `/api/v1/tasks/:id/cancel` | 取消运行中的任务 |
+| POST | `/api/v1/tasks/:id/files/:filename/skip` | 运行中跳过指定文件 |
 | GET | `/api/v1/zotero/health` | 检查 Zotero MCP 连接 |
 | GET | `/api/v1/zotero/collections` | 列出 Zotero 分组 |
+| GET | `/api/v1/mineru/health` | 检查 MinerU API 连接 |
+| GET | `/api/v1/dify/health` | 检查 Dify API 连接 |
+| GET | `/api/v1/image-summary/health` | 检查视觉 API 连接 |
 
 ## 工作原理
 
-1. **配置** — 通过 Web 界面设置 API 密钥和偏好（CLI 使用 `.env`）
-2. **收集** — 通过 MCP 查询 Zotero，获取附件文件路径，可按分类筛选
+1. **配置** — 通过 Web 界面设置 API 密钥和偏好，使用内置健康检查验证连接
+2. **收集** — 通过 MCP 查询 Zotero，获取附件文件路径，可按分类筛选；跳过已上传到 Dify 的项目（异常/禁用状态的文档会自动重新处理）
 3. **解析** — 将文件批量上传到 MinerU API，轮询等待完成，下载生成的 Markdown
 4. **清洗** — 应用 Markdown 清洗规则（去除 HTML、压缩空行、移除占位符）
-5. **智能分割** — 分析文档结构，检测标题和句子边界，多维度评分最优分割点，插入 `<!--split-->` 标记
-6. **上传** — 在 Dify 知识库中创建文档，分段规则与分割标记对齐
-7. **追踪** — 在 `progress.json` 中记录已处理/失败的条目，后续运行自动跳过已完成项
+5. **图片摘要** — 通过视觉 API 将图片占位符替换为 AI 生成的文本描述
+6. **智能分割** — 分析文档结构，检测标题和句子边界，多维度评分最优分割点，插入 `<!--split-->` 标记
+7. **上传** — 提交文档到 Dify；文件在成功提交后即视为完成（索引在 Dify 中异步进行）
+
+## 文档
+
+- [docs/CONTRIB.md](docs/CONTRIB.md) — 开发贡献指南，包含完整环境变量参考
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) — 运维手册：部署、监控、故障排查
 
 ## 许可证
 

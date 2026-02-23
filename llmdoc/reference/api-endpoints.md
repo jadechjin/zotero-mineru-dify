@@ -101,7 +101,7 @@ Response:
       "collection_keys": ["KEY1"],
       "config_version": 5,
       "error": "",
-      "stats": { "total": 10, "succeeded": 3, "failed": 1, "pending": 6 }
+      "stats": { "total": 10, "succeeded": 3, "failed": 1, "skipped": 0, "pending": 6 }
     }
   ]
 }
@@ -144,7 +144,7 @@ Response:
     {
       "filename": "paper.pdf",
       "status": "succeeded",
-      "stage": "dify_index",
+      "stage": "dify_upload",
       "error": "",
       "progress": 0.0
     }
@@ -158,6 +158,28 @@ Cancel a running or queued task.
 
 Response: `{"success": true, "message": "..."}` or 409 if not cancellable.
 
+### POST /tasks/:id/files/:filename/skip
+
+Skip a specific file's subsequent processing in a running task. The file must be in a non-terminal status (not `succeeded`, `failed`, or `skipped`).
+
+The `:filename` path parameter should be URL-encoded if it contains special characters.
+
+**Skip Behavior:**
+- Immediately marks the file as `skipped` in the task's file list
+- Adds the filename to the shared `skip_files` set
+- Pipeline thread checks this set at MD Clean and Dify Upload stage boundaries
+- Smart-split child parts (files split from the parent) are also skipped automatically
+
+Response (200):
+```json
+{ "success": true, "message": "文件已标记为跳过: paper.pdf" }
+```
+
+Error (409): File is in terminal status, task not running, or file not found.
+```json
+{ "success": false, "error": "文件已处于终态: succeeded" }
+```
+
 ## Zotero
 
 ### GET /zotero/health
@@ -166,7 +188,7 @@ Check Zotero MCP connection using current config.
 
 Response:
 ```json
-{ "success": true, "connected": true }
+{ "success": true, "connected": true, "message": "Zotero MCP 服务连通" }
 ```
 
 ### GET /zotero/collections
@@ -183,13 +205,33 @@ Response:
 }
 ```
 
+## Services
+
+Connectivity tests for external services. All return unified format:
+
+```json
+{ "success": true, "connected": true, "message": "描述信息" }
+```
+
+### GET /mineru/health
+
+Check MinerU API connectivity and token validity.
+
+### GET /dify/health
+
+Check Dify API connectivity and API key validity.
+
+### GET /image-summary/health
+
+Check vision model API connectivity and API key validity.
+
 ## Status Enums
 
 ### TaskStatus
 `queued` | `running` | `succeeded` | `failed` | `cancelled` | `partial_succeeded`
 
 ### Stage
-`init` | `zotero_collect` | `mineru_upload` | `mineru_poll` | `md_clean` | `smart_split` | `dify_upload` | `dify_index` | `finalize`
+`init` | `zotero_collect` | `mineru_upload` | `mineru_poll` | `md_clean` | `smart_split` | `dify_upload` | `finalize`
 
 ### FileStatus
 `pending` | `processing` | `succeeded` | `failed` | `skipped`

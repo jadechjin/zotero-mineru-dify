@@ -4,7 +4,8 @@ const Dashboard = {
     _taskId: null,
     _pollTimer: null,
     _lastSeq: 0,
-    _stageOrder: ['zotero_collect', 'mineru_upload', 'md_clean', 'smart_split', 'dify_upload', 'dify_index'],
+    _stageOrder: ['zotero_collect', 'mineru_upload', 'md_clean', 'smart_split', 'dify_upload'],
+    _taskRunning: false,
 
     init() {
         document.getElementById('btn-start').addEventListener('click', () => this.startPipeline());
@@ -129,6 +130,7 @@ const Dashboard = {
             const resp = await Api.createTask(collectionKeys);
             this._taskId = resp.task_id;
             this._lastSeq = 0;
+            this._taskRunning = true;
             this.clearUI();
             this.startPolling();
             document.getElementById('btn-cancel').disabled = false;
@@ -196,6 +198,7 @@ const Dashboard = {
             const terminal = ['succeeded', 'failed', 'cancelled', 'partial_succeeded'];
             if (terminal.includes(task.status)) {
                 this.stopPolling();
+                this._taskRunning = false;
                 document.getElementById('btn-start').disabled = false;
                 document.getElementById('btn-cancel').disabled = true;
                 Utils.showToast(`任务 ${task.status}`, task.status === 'succeeded' ? 'success' : 'warn');
@@ -214,21 +217,17 @@ const Dashboard = {
         const stats = task.stats || {};
 
         if (status === 'running' && stage === 'dify_upload') {
-            this._showHint(el, 'info', 'Dify 上传中：文档正在提交，随后会进入入库处理。');
-            return;
-        }
-        if (status === 'running' && stage === 'dify_index') {
-            this._showHint(el, 'info', 'Dify 入库处理中：系统会在每个文件入库完成后逐个反馈结果。');
+            this._showHint(el, 'info', 'Dify 上传中：文档正在提交至 Dify。');
             return;
         }
 
         if (['failed', 'partial_succeeded'].includes(status) && (stats.failed || 0) > 0) {
-            this._showHint(el, 'warning', '存在失败文件。可再次点击“开始流程”重试，已成功文件会自动跳过。');
+            this._showHint(el, 'warning', '存在失败文件。可再次点击”开始流程”重试，已成功文件会自动跳过。');
             return;
         }
 
         if (status === 'succeeded') {
-            this._showHint(el, 'success', '全部文件处理完成并已入库。');
+            this._showHint(el, 'success', '全部文件已提交至 Dify。索引状态请在 Dify 控制台确认。');
             return;
         }
 
@@ -277,6 +276,7 @@ const Dashboard = {
         document.getElementById('stat-pending').textContent = '0';
         document.getElementById('stat-succeeded').textContent = '0';
         document.getElementById('stat-failed').textContent = '0';
+        document.getElementById('stat-skipped').textContent = '0';
         document.getElementById('event-log').innerHTML = '';
         document.getElementById('event-count').textContent = '0 事件';
         document.getElementById('file-list').innerHTML = '';
@@ -293,6 +293,7 @@ const Dashboard = {
         document.getElementById('stat-pending').textContent = stats.pending || 0;
         document.getElementById('stat-succeeded').textContent = stats.succeeded || 0;
         document.getElementById('stat-failed').textContent = stats.failed || 0;
+        document.getElementById('stat-skipped').textContent = stats.skipped || 0;
     },
 
     updateStepper(currentStage, taskStatus) {
@@ -340,10 +341,15 @@ const Dashboard = {
     updateFiles(files) {
         const container = document.getElementById('file-list');
         container.innerHTML = '';
+        const terminalStatuses = ['succeeded', 'failed', 'skipped'];
         for (const f of files) {
             const stageText = Utils.formatStage ? Utils.formatStage(f.stage) : (f.stage || '-');
             const retryTip = f.status === 'failed'
                 ? '<small class="text-warning d-block mt-1">可重试：再次启动流程会自动重试该失败文件</small>'
+                : '';
+            const canSkip = this._taskRunning && !terminalStatuses.includes(f.status);
+            const skipBtn = canSkip
+                ? `<button class="btn btn-outline-secondary btn-sm ms-1 btn-skip-file" data-filename="${Utils.escape(f.filename)}" title="跳过此文件">跳过</button>`
                 : '';
 
             const card = document.createElement('div');
@@ -352,8 +358,11 @@ const Dashboard = {
                 <div class="card file-card">
                     <div class="card-body py-2 px-3">
                         <div class="d-flex justify-content-between align-items-center gap-2">
-                            <span class="text-truncate" style="max-width:60%">${Utils.escape(f.filename)}</span>
-                            ${Utils.formatStatus(f.status)}
+                            <span class="text-truncate" style="max-width:50%">${Utils.escape(f.filename)}</span>
+                            <div class="d-flex align-items-center gap-1">
+                                ${Utils.formatStatus(f.status)}
+                                ${skipBtn}
+                            </div>
                         </div>
                         <small class="text-muted">阶段：${Utils.escape(stageText)}</small>
                         ${f.error ? `<small class="text-danger d-block">${Utils.escape(f.error)}</small>` : ''}
@@ -362,5 +371,22 @@ const Dashboard = {
                 </div>`;
             container.appendChild(card);
         }
-    }
+        container.querySelectorAll('.btn-skip-file').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const filename = e.currentTarget.dataset.filename;
+                if (filename) this.skipFile(filename);
+            });
+        });
+    },
+
+    async skipFile(filename) {
+        if (!this._taskId || !filename) return;
+        try {
+            await Api.skipFile(this._taskId, filename);
+            Utils.showToast(`已跳过: ${filename}`, 'info');
+            this.poll();
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    },
 };

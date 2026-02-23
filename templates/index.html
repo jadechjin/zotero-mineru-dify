@@ -50,7 +50,7 @@
 
             <!-- Stats Cards -->
             <div class="row mb-3">
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <div class="card text-center">
                         <div class="card-body">
                             <h5 class="card-title text-muted">等待中</h5>
@@ -58,7 +58,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <div class="card text-center border-success">
                         <div class="card-body">
                             <h5 class="card-title text-success">成功</h5>
@@ -66,11 +66,19 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <div class="card text-center border-danger">
                         <div class="card-body">
                             <h5 class="card-title text-danger">失败</h5>
                             <p class="card-text display-6 text-danger" id="stat-failed">0</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card text-center">
+                        <div class="card-body">
+                            <h5 class="card-title text-secondary">已跳过</h5>
+                            <p class="card-text display-6 text-secondary" id="stat-skipped">0</p>
                         </div>
                     </div>
                 </div>
@@ -90,8 +98,6 @@
                                 class="step-icon">&#9675;</span><small>分割</small></div>
                         <div class="step" data-stage="dify_upload"><span
                                 class="step-icon">&#9675;</span><small>Dify Upload</small></div>
-                        <div class="step" data-stage="dify_index"><span
-                                class="step-icon">&#9675;</span><small>Dify Indexing</small></div>
                     </div>
                 </div>
             </div>

@@ -40,6 +40,7 @@ ENV/
 
 # Project runtime state
 progress.json
+config/runtime_config.json
 
 # OS files
 .DS_Store
@@ -48,6 +49,7 @@ Desktop.ini
 
 # Logs
 *.log
+outputs/
 
 # Byte-compiled / optimized
 *.pyc
@@ -61,3 +63,4 @@ Desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+llmdoc/

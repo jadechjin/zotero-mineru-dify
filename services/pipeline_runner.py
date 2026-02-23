@@ -17,12 +17,12 @@ from models.task_models import (
 
 logger = logging.getLogger(__name__)
 
-PROGRESS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "progress.json")
 
-
-def run_pipeline(task: Task, cancel: threading.Event):
+def run_pipeline(task: Task, cancel: threading.Event, skip_files: set = None):
     """Run full pipeline in a background thread."""
     cfg = task.config_snapshot
+    if skip_files is None:
+        skip_files = set()
     task.status = TaskStatus.RUNNING
     task.started_at = time.time()
     task.stage = Stage.INIT
@@ -44,10 +44,6 @@ def run_pipeline(task: Task, cancel: threading.Event):
         if not check_connection(cfg):
             raise RuntimeError("cannot connect Zotero MCP service")
 
-        from progress import load_progress
-
-        progress = load_progress(PROGRESS_FILE)
-
         from dify_client import (
             get_or_create_dataset,
             get_dataset_info,
@@ -66,58 +62,20 @@ def run_pipeline(task: Task, cancel: threading.Event):
         if dataset_doc_total is not None:
             task.add_event("info", "zotero_collect", "dataset_doc_total", f"dataset docs total: {dataset_doc_total}")
 
-        should_save_progress = False
-        conflict_count = _clean_conflict_processed_records(progress, dataset_id)
-        if conflict_count:
-            should_save_progress = True
+        skipped_unhealthy = remote_name_index.get("skipped_unhealthy", 0)
+        if skipped_unhealthy:
             task.add_event(
-                "warn",
-                "zotero_collect",
-                "progress_conflict_cleaned",
-                f"cleaned {conflict_count} processed/failed conflicts",
+                "info", "zotero_collect", "unhealthy_docs_skipped",
+                f"{skipped_unhealthy} docs in Dify skipped (error/disabled), will re-process",
             )
 
-        stale_count, stale_reason = _reconcile_processed_records_with_remote(
-            progress,
-            dataset_id,
-            remote_name_index,
-        )
-        if stale_count:
-            should_save_progress = True
-            if stale_reason == "empty-dataset":
-                task.add_event(
-                    "warn",
-                    "zotero_collect",
-                    "stale_processed_cleaned",
-                    f"dataset empty; removed {stale_count} stale processed records",
-                )
-            else:
-                task.add_event(
-                    "warn",
-                    "zotero_collect",
-                    "stale_processed_cleaned",
-                    f"removed {stale_count} stale processed records by remote index",
-                )
-        elif stale_reason == "no-prefixed-item-key":
-            task.add_event(
-                "info",
-                "zotero_collect",
-                "remote_name_index_unavailable",
-                "remote doc names have no [item_key] prefix; skip name-based cleanup",
-            )
-
-        if should_save_progress:
-            from progress import save_progress
-
-            save_progress(progress, PROGRESS_FILE)
-
+        uploaded_item_keys = {k.split("#")[0] for k in remote_name_index.get("prefixed_item_keys", set())}
         file_map = collect_files(
             cfg,
-            progress_processed=progress["processed"],
+            uploaded_item_keys=uploaded_item_keys,
             collection_keys=task.collection_keys or None,
             recursive=cfg.get("zotero", {}).get("collection_recursive", True),
             page_size=cfg.get("zotero", {}).get("collection_page_size", 50),
-            target_dataset=dataset_id,
         )
 
         if not file_map:
@@ -141,13 +99,7 @@ def run_pipeline(task: Task, cancel: threading.Event):
         md_results, md_failures = process_files(cfg, file_map)
 
         for key, reason in md_failures.items():
-            progress["failed"][key] = {"stage": "mineru", "reason": reason}
             _update_file_status(task, key, file_map, FileStatus.FAILED, Stage.MINERU_POLL, str(reason))
-
-        if md_failures:
-            from progress import save_progress
-
-            save_progress(progress, PROGRESS_FILE)
 
         task.add_event(
             "info",
@@ -169,6 +121,29 @@ def run_pipeline(task: Task, cancel: threading.Event):
         task.add_event("info", "md_clean", "stage_enter", "start markdown cleaning")
 
         from md_cleaner import clean_all
+
+        key_to_filename = _build_key_to_filename(file_map)
+
+        # Filter out skipped files before cleaning.
+        if skip_files:
+            filtered = {}
+            skipped_clean = []
+            for key, data in md_results.items():
+                fname = key_to_filename.get(key, "")
+                if fname in skip_files:
+                    skipped_clean.append(key)
+                    _update_file_status(task, key, file_map, FileStatus.SKIPPED, Stage.MD_CLEAN, "用户手动跳过")
+                else:
+                    filtered[key] = data
+            if skipped_clean:
+                task.add_event("info", "md_clean", "files_skipped", f"skipped {len(skipped_clean)} files")
+            md_results = filtered
+
+        if not md_results:
+            task.add_event("info", "md_clean", "no_results", "no files to clean after skip")
+            task.status = TaskStatus.SUCCEEDED
+            task.finished_at = time.time()
+            return
 
         md_results, clean_stats = clean_all(md_results, cfg)
 
@@ -258,6 +233,41 @@ def run_pipeline(task: Task, cancel: threading.Event):
             f"start uploading {upload_doc_count} docs to Dify from {source_doc_count} source files",
         )
 
+        # Filter out skipped files before upload (including split parts).
+        if skip_files:
+            filtered = {}
+            skipped_upload = []
+            for key, data in md_results.items():
+                parent_key = _resolve_parent_task_key(md_results, key)
+                parent_fname = key_to_filename.get(parent_key, "")
+                if parent_fname in skip_files:
+                    skipped_upload.append(key)
+                else:
+                    filtered[key] = data
+            if skipped_upload:
+                task.add_event(
+                    "info", "dify_upload", "files_skipped",
+                    f"skipped {len(skipped_upload)} docs (including split parts)",
+                )
+            md_results = filtered
+
+        if not md_results:
+            task.add_event("info", "dify_upload", "no_results", "no files to upload after skip")
+            task.stage = Stage.FINALIZE
+            skipped_count = sum(1 for f in task.files if f.status == FileStatus.SKIPPED)
+            if skipped_count == len(task.files):
+                task.status = TaskStatus.SUCCEEDED
+            else:
+                total_failed = len(md_failures)
+                if total_failed == 0:
+                    task.status = TaskStatus.SUCCEEDED
+                else:
+                    task.status = TaskStatus.PARTIAL_SUCCEEDED
+            task.finished_at = time.time()
+            task.add_event("info", "finalize", "task_finished", "pipeline done (all remaining files skipped)")
+            task.add_event("info", "finalize", "dify_indexing_hint", "Files submitted to Dify. Check indexing status in Dify console.")
+            return
+
         # Force Dify segment separator when smart split is enabled.
         effective_cfg = cfg
         if smart_cfg.get("enabled", True):
@@ -270,20 +280,30 @@ def run_pipeline(task: Task, cancel: threading.Event):
         from dify_client import upload_all
 
         parent_part_totals = _build_parent_part_totals(md_results)
-        parent_index_ok_counts = defaultdict(int)
+        parent_submit_ok_counts = defaultdict(int)
         parent_failures = set()
-        parent_done_reported = set()
 
         def _on_dify_progress(payload: dict):
             phase = (payload or {}).get("phase", "")
             item_key = (payload or {}).get("item_key", "")
             message = (payload or {}).get("message", "")
-            success = (payload or {}).get("success", None)
             parent_key = _resolve_parent_task_key(md_results, item_key) if item_key else ""
+
+            # Ignore progress for skipped files.
+            if parent_key:
+                parent_fname = key_to_filename.get(parent_key, "")
+                if parent_fname in skip_files:
+                    return
 
             if phase == "submit_ok":
                 if parent_key:
-                    _update_file_status(task, parent_key, file_map, FileStatus.PROCESSING, Stage.DIFY_UPLOAD)
+                    parent_submit_ok_counts[parent_key] += 1
+                    expected_parts = int(parent_part_totals.get(parent_key, 1))
+                    if (
+                        parent_key not in parent_failures
+                        and parent_submit_ok_counts[parent_key] >= expected_parts
+                    ):
+                        _update_file_status(task, parent_key, file_map, FileStatus.SUCCEEDED, Stage.DIFY_UPLOAD)
                 task.add_event("info", "dify_upload", "file_submitted", message or f"submitted to Dify: {item_key}")
                 return
 
@@ -299,40 +319,6 @@ def run_pipeline(task: Task, cancel: threading.Event):
                         message or "Dify submit failed",
                     )
                 task.add_event("warn", "dify_upload", "file_submit_failed", message or f"submit failed: {item_key}")
-                return
-
-            if phase == "index_wait_begin":
-                task.stage = Stage.DIFY_INDEX
-                task.add_event("info", "dify_index", "index_wait", message or "waiting Dify indexing")
-                return
-
-            if phase == "index_ok":
-                if parent_key:
-                    parent_index_ok_counts[parent_key] += 1
-                    expected_parts = int(parent_part_totals.get(parent_key, 1))
-                    if (
-                        parent_key not in parent_failures
-                        and parent_index_ok_counts[parent_key] >= expected_parts
-                        and parent_key not in parent_done_reported
-                    ):
-                        parent_done_reported.add(parent_key)
-                        _update_file_status(task, parent_key, file_map, FileStatus.SUCCEEDED, Stage.DIFY_INDEX)
-                task.add_event("info", "dify_index", "file_indexed", message or f"index done: {item_key}")
-                return
-
-            if phase == "index_failed":
-                if parent_key:
-                    parent_failures.add(parent_key)
-                    _update_file_status(
-                        task,
-                        parent_key,
-                        file_map,
-                        FileStatus.FAILED,
-                        Stage.DIFY_INDEX,
-                        message or "Dify indexing failed",
-                    )
-                level = "error" if success is False else "warn"
-                task.add_event(level, "dify_index", "file_index_failed", message or f"index failed: {item_key}")
                 return
 
         uploaded_keys, upload_failures = upload_all(
@@ -351,35 +337,17 @@ def run_pipeline(task: Task, cancel: threading.Event):
         )
 
         for key in sorted(uploaded_parent_keys):
-            file_name = _resolve_parent_file_name(md_results, key)
-            _clear_parent_progress_entries(progress["processed"], key)
-            progress["processed"][key] = {
-                "file_name": file_name,
-                "dify_dataset": dataset_id,
-            }
-            _clear_parent_progress_entries(progress["failed"], key)
-            _update_file_status(task, key, file_map, FileStatus.SUCCEEDED, Stage.DIFY_INDEX)
+            _update_file_status(task, key, file_map, FileStatus.SUCCEEDED, Stage.DIFY_UPLOAD)
 
         for key in sorted(failed_parent_keys):
-            _clear_parent_progress_entries(progress["processed"], key)
-            _clear_parent_progress_entries(progress["failed"], key)
-            progress["failed"][key] = {
-                "stage": "dify",
-                "dify_dataset": dataset_id,
-                "reason": "upload or indexing failed",
-            }
             _update_file_status(
                 task,
                 key,
                 file_map,
                 FileStatus.FAILED,
-                Stage.DIFY_INDEX,
-                "upload or indexing failed",
+                Stage.DIFY_UPLOAD,
+                "upload failed",
             )
-
-        from progress import save_progress
-
-        save_progress(progress, PROGRESS_FILE)
 
         task.add_event(
             "info",
@@ -390,13 +358,14 @@ def run_pipeline(task: Task, cancel: threading.Event):
         if failed_parent_keys:
             task.add_event(
                 "warn",
-                "dify_index",
+                "dify_upload",
                 "retry_hint",
-                "Some files failed during upload/indexing. Start again to retry failed files; successful files will be skipped.",
+                "Some files failed during upload. Start again to retry failed files; successful files will be skipped.",
             )
 
         # ---- Finalize ----
         task.stage = Stage.FINALIZE
+        skipped_count = sum(1 for f in task.files if f.status == FileStatus.SKIPPED)
         total_failed = len(md_failures) + len(failed_parent_keys)
         if total_failed == 0:
             task.status = TaskStatus.SUCCEEDED
@@ -412,8 +381,15 @@ def run_pipeline(task: Task, cancel: threading.Event):
             "task_finished",
             (
                 f"pipeline done: parsed {source_doc_count}/{len(file_map)}, "
-                f"uploaded {len(uploaded_parent_keys)}/{source_doc_count}"
+                f"uploaded {len(uploaded_parent_keys)}/{source_doc_count}, "
+                f"skipped {skipped_count}"
             ),
+        )
+        task.add_event(
+            "info",
+            "finalize",
+            "dify_indexing_hint",
+            "Files submitted to Dify. Check indexing status in Dify console.",
         )
 
     except _CancelledError:
@@ -426,84 +402,6 @@ def run_pipeline(task: Task, cancel: threading.Event):
         task.error = str(exc)
         task.finished_at = time.time()
         task.add_event("error", task.stage.value, "pipeline_error", str(exc))
-
-
-def _clean_conflict_processed_records(progress: dict, dataset_id: str) -> int:
-    """Clean processed/failed conflicts for the same dataset."""
-    processed = progress.get("processed", {})
-    failed = progress.get("failed", {})
-    conflict_keys = []
-
-    for key, failed_entry in failed.items():
-        if key not in processed:
-            continue
-
-        processed_entry = processed[key]
-        processed_dataset = processed_entry.get("dify_dataset") if isinstance(processed_entry, dict) else None
-        if processed_dataset and processed_dataset != dataset_id:
-            continue
-
-        if isinstance(failed_entry, dict):
-            failed_stage = failed_entry.get("stage")
-            failed_dataset = failed_entry.get("dify_dataset")
-            if failed_dataset and failed_dataset != dataset_id:
-                continue
-            if failed_stage and failed_stage != "dify":
-                continue
-            conflict_keys.append(key)
-            continue
-
-        if isinstance(failed_entry, str) and "dify" in failed_entry.lower():
-            conflict_keys.append(key)
-
-    for key in conflict_keys:
-        processed.pop(key, None)
-
-    return len(conflict_keys)
-
-
-def _reconcile_processed_records_with_remote(progress: dict, dataset_id: str, remote_name_index: dict):
-    """Reconcile local processed records against remote dataset index."""
-    from dify_client import build_markdown_doc_name
-
-    processed = progress.get("processed", {})
-    total = remote_name_index.get("total")
-    remote_names = set(remote_name_index.get("names") or [])
-    remote_item_keys = set(remote_name_index.get("prefixed_item_keys") or [])
-
-    stale_keys = []
-    if total == 0:
-        for key, entry in processed.items():
-            if isinstance(entry, dict) and entry.get("dify_dataset") == dataset_id:
-                stale_keys.append(key)
-        for key in stale_keys:
-            processed.pop(key, None)
-        return len(stale_keys), "empty-dataset"
-
-    if not remote_item_keys:
-        return 0, "no-prefixed-item-key"
-
-    for key, entry in processed.items():
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("dify_dataset") != dataset_id:
-            continue
-
-        processed_key = str(key)
-        item_key = processed_key.split("#", 1)[0]
-        file_name = entry.get("file_name") or "document"
-        expected_name = build_markdown_doc_name(item_key, file_name)
-
-        if expected_name in remote_names:
-            continue
-        if item_key in remote_item_keys:
-            continue
-        stale_keys.append(processed_key)
-
-    for key in stale_keys:
-        processed.pop(key, None)
-
-    return len(stale_keys), "name-index"
 
 
 def _resolve_parent_task_key(md_results: dict, item_key: str) -> str:
@@ -536,21 +434,6 @@ def _resolve_parent_file_name(md_results: dict, parent_key: str) -> str:
             if file_name:
                 return file_name
     return parent_key
-
-
-def _clear_parent_progress_entries(progress_bucket: dict, parent_key: str):
-    if not isinstance(progress_bucket, dict) or not parent_key:
-        return
-
-    keys = []
-    prefix = f"{parent_key}#part"
-    for key in list(progress_bucket.keys()):
-        key_str = str(key)
-        if key_str == parent_key or key_str.startswith(prefix):
-            keys.append(key)
-
-    for key in keys:
-        progress_bucket.pop(key, None)
 
 
 def _aggregate_parent_upload_outcomes(
@@ -612,6 +495,11 @@ def _update_file_status(
             fs.stage = stage
             fs.error = error
             break
+
+
+def _build_key_to_filename(file_map: dict) -> dict[str, str]:
+    """Build task_key -> filename mapping."""
+    return {tkey: os.path.basename(fpath) for fpath, tkey in file_map.items()}
 
 
 class _CancelledError(Exception):

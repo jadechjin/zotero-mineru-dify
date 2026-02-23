@@ -15,6 +15,10 @@ Automated pipeline: Zotero PDF attachments -> MinerU Markdown parsing -> Smart s
 - [architecture/config-system.md](architecture/config-system.md) - Runtime config provider design
 - [architecture/smart-split.md](architecture/smart-split.md) - Smart split pipeline design
 
+### Guides
+- [guides/contrib.md](../docs/CONTRIB.md) — Contributing guide: env setup, scripts, API endpoints
+- [guides/runbook.md](../docs/RUNBOOK.md) — Runbook: deployment, monitoring, troubleshooting
+
 ### Reference
 - [reference/api-endpoints.md](reference/api-endpoints.md) - REST API specification
 - [reference/config-schema.md](reference/config-schema.md) - Config schema field reference

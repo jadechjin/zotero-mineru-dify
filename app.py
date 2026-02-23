@@ -13,6 +13,7 @@ from web.routes.health import health_bp
 from web.routes.config_api import config_bp, init_config_routes
 from web.routes.tasks_api import tasks_bp, init_tasks_routes
 from web.routes.zotero_api import zotero_bp, init_zotero_routes
+from web.routes.services_api import services_bp, init_services_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,11 +36,13 @@ def create_app():
     init_config_routes(config_provider)
     init_tasks_routes(task_manager, config_provider, run_pipeline)
     init_zotero_routes(config_provider)
+    init_services_routes(config_provider)
 
     app.register_blueprint(health_bp, url_prefix="/api/v1")
     app.register_blueprint(config_bp, url_prefix="/api/v1")
     app.register_blueprint(tasks_bp, url_prefix="/api/v1")
     app.register_blueprint(zotero_bp, url_prefix="/api/v1")
+    app.register_blueprint(services_bp, url_prefix="/api/v1")
 
     @app.route("/")
     def index():

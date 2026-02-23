@@ -1,6 +1,8 @@
 """Markdown post-processing module between MinerU output and Dify upload."""
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import logging
 import os
 import re
@@ -164,8 +166,21 @@ def _rewrite_images_with_summaries(text, file_meta, cfg):
     if max_images == 0:
         return text, 0, image_stats
 
-    assets = file_meta.get("image_assets") or []
-    asset_index = _build_asset_index(assets)
+    summary_jobs = _collect_image_summary_jobs(
+        lines=lines,
+        file_meta=file_meta or {},
+        cfg=cfg,
+        max_images=max_images,
+    )
+    if not summary_jobs:
+        return text, 0, image_stats
+
+    image_stats["total_images"] = len(summary_jobs)
+    job_results = _execute_image_summary_jobs(summary_jobs, cfg)
+
+    jobs_by_line = {}
+    for job in summary_jobs:
+        jobs_by_line.setdefault(job["line_idx"], []).append(job["job_idx"])
 
     inserted = 0
     rewritten = []
@@ -173,39 +188,8 @@ def _rewrite_images_with_summaries(text, file_meta, cfg):
     for idx, line in enumerate(lines):
         rewritten.append(line)
 
-        matches = list(_RE_MD_IMAGE.finditer(line))
-        if not matches:
-            continue
-
-        if _already_has_image_summary(lines, idx):
-            continue
-
-        for match in matches:
-            if inserted >= max_images:
-                break
-
-            image_stats["total_images"] += 1
-            raw_link = (match.group("link") or "").strip()
-            asset = _resolve_asset_for_link(raw_link, asset_index)
-
-            alt_text = (match.group("alt") or "").strip()
-            caption_text, nearby_text = _collect_image_context(lines, idx, alt_text)
-            fig_id = _detect_fig_id(
-                alt_text=alt_text,
-                caption_text=caption_text,
-                nearby_text=nearby_text,
-                raw_link=raw_link,
-                serial=inserted + 1,
-            )
-
-            block, source = _build_image_summary_block(
-                fig_id=fig_id,
-                caption_text=caption_text,
-                nearby_text=nearby_text,
-                doc_context=_collect_document_context(lines, idx, cfg),
-                asset=asset,
-                cfg=cfg,
-            )
+        for job_idx in jobs_by_line.get(idx, []):
+            block, source = job_results.get(job_idx, ("", "fallback_only"))
             if not block:
                 continue
 
@@ -225,6 +209,125 @@ def _rewrite_images_with_summaries(text, file_meta, cfg):
             inserted += 1
 
     return "\n".join(rewritten), inserted, image_stats
+
+
+def _collect_image_summary_jobs(lines, file_meta, cfg, max_images):
+    assets = file_meta.get("image_assets") or []
+    asset_index = _build_asset_index(assets)
+    jobs = []
+
+    for idx, line in enumerate(lines):
+        matches = list(_RE_MD_IMAGE.finditer(line))
+        if not matches:
+            continue
+
+        if _already_has_image_summary(lines, idx):
+            continue
+
+        doc_context = _collect_document_context(lines, idx, cfg)
+        for match in matches:
+            if len(jobs) >= max_images:
+                break
+
+            raw_link = (match.group("link") or "").strip()
+            asset = _resolve_asset_for_link(raw_link, asset_index)
+            alt_text = (match.group("alt") or "").strip()
+            caption_text, nearby_text = _collect_image_context(lines, idx, alt_text)
+            fig_id = _detect_fig_id(
+                alt_text=alt_text,
+                caption_text=caption_text,
+                nearby_text=nearby_text,
+                raw_link=raw_link,
+                serial=len(jobs) + 1,
+            )
+
+            jobs.append(
+                {
+                    "job_idx": len(jobs),
+                    "line_idx": idx,
+                    "fig_id": fig_id,
+                    "caption_text": caption_text,
+                    "nearby_text": nearby_text,
+                    "doc_context": doc_context,
+                    "asset": asset,
+                }
+            )
+
+        if len(jobs) >= max_images:
+            break
+
+    return jobs
+
+
+def _execute_image_summary_jobs(summary_jobs, cfg):
+    if not summary_jobs:
+        return {}
+
+    concurrency = _resolve_image_summary_concurrency(cfg)
+    if concurrency <= 1 or len(summary_jobs) <= 1:
+        return {
+            job["job_idx"]: _run_image_summary_job(job, cfg)
+            for job in summary_jobs
+        }
+
+    max_workers = min(concurrency, len(summary_jobs))
+    logger.info(
+        "image summary parallel enabled: workers=%d, tasks=%d",
+        max_workers,
+        len(summary_jobs),
+    )
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_image_summary_job, job, cfg): job
+            for job in summary_jobs
+        }
+        for future in as_completed(futures):
+            job = futures[future]
+            job_idx = job["job_idx"]
+            try:
+                results[job_idx] = future.result()
+            except Exception as exc:
+                logger.warning(
+                    "image summary async task crashed for %s: %s",
+                    job["fig_id"],
+                    exc,
+                )
+                fallback = _build_fallback_summary_block(
+                    job["fig_id"],
+                    job["caption_text"],
+                    job["nearby_text"],
+                )
+                results[job_idx] = (fallback, "fallback_only")
+
+    return results
+
+
+def _run_image_summary_job(job, cfg):
+    try:
+        return _build_image_summary_block(
+            fig_id=job["fig_id"],
+            caption_text=job["caption_text"],
+            nearby_text=job["nearby_text"],
+            doc_context=job["doc_context"],
+            asset=job["asset"],
+            cfg=cfg,
+        )
+    except Exception as exc:
+        logger.warning("image summary build failed for %s: %s", job["fig_id"], exc)
+        fallback = _build_fallback_summary_block(
+            job["fig_id"],
+            job["caption_text"],
+            job["nearby_text"],
+        )
+        return fallback, "fallback_only"
+
+
+def _resolve_image_summary_concurrency(cfg):
+    image_cfg = cfg.get("image_summary", {})
+    value = _safe_int(image_cfg.get("concurrency"), 4)
+    return max(1, min(32, value))
 
 
 def _build_asset_index(assets):
@@ -439,8 +542,18 @@ def _call_vision_summary(fig_id, caption_text, nearby_text, doc_context, image_p
     if not image_path or not os.path.exists(image_path):
         return None
 
-    base_url = str(image_cfg.get("api_base_url", "https://api.openai.com/v1") or "").strip()
+    provider = _resolve_vision_provider(image_cfg.get("provider"))
+    default_base_url = "https://api.openai.com/v1"
+    base_url = str(image_cfg.get("api_base_url", default_base_url) or "").strip()
+    if not base_url:
+        base_url = default_base_url
     endpoints = _build_vision_endpoints(base_url)
+    if provider == "newapi" and "openai.com" in base_url:
+        logger.warning(
+            "image_summary.provider=newapi but api_base_url=%s. "
+            "请配置为你的 New API 服务地址（通常是 .../v1）。",
+            base_url,
+        )
 
     timeout_s = max(10, _safe_int(image_cfg.get("request_timeout_s"), 120))
     max_tokens = max(256, _safe_int(image_cfg.get("max_tokens"), 900))
@@ -456,65 +569,114 @@ def _call_vision_summary(fig_id, caption_text, nearby_text, doc_context, image_p
         mime = _guess_image_mime(image_path)
         data_uri = f"data:{mime};base64,{b64}"
 
-        payload = {
-            "model": model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You summarize scientific figures conservatively and must not invent values.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_uri}},
-                    ],
-                },
-            ],
-        }
+        payload = _build_vision_payload(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prompt=prompt,
+            data_uri=data_uri,
+            provider=provider,
+            image_cfg=image_cfg,
+        )
+        use_system_proxy = _safe_bool(image_cfg.get("use_system_proxy"), True)
+        session = requests.Session()
+        session.trust_env = use_system_proxy
 
         last_exc = None
-        for endpoint in endpoints:
-            try:
-                resp = requests.post(
-                    endpoint,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=timeout_s,
-                )
-                resp.raise_for_status()
+        try:
+            for endpoint in endpoints:
+                try:
+                    resp = session.post(
+                        endpoint,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                        timeout=timeout_s,
+                    )
+                    resp.raise_for_status()
 
-                body = _parse_json_response(resp)
-                choices = body.get("choices") or []
-                if not choices:
-                    return None
+                    body = _parse_json_response(resp)
+                    choices = body.get("choices") or []
+                    if not choices:
+                        return None
 
-                message = choices[0].get("message") or {}
-                content = message.get("content", "")
-                if isinstance(content, list):
-                    parts = []
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            parts.append(part.get("text", ""))
-                    content = "\n".join([p for p in parts if p])
+                    message = choices[0].get("message") or {}
+                    content = message.get("content", "")
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                        content = "\n".join([p for p in parts if p])
 
-                if not isinstance(content, str):
-                    return None
+                    if not isinstance(content, str):
+                        return None
 
-                return content.strip()
-            except Exception as exc:
-                last_exc = exc
-                logger.debug("vision endpoint failed for %s at %s: %s", fig_id, endpoint, exc)
+                    return content.strip()
+                except Exception as exc:
+                    last_exc = exc
+                    logger.debug("vision endpoint failed for %s at %s: %s", fig_id, endpoint, exc)
+        finally:
+            session.close()
 
         raise RuntimeError(f"all vision endpoints failed, last_error={last_exc}")
     except Exception as exc:
         logger.warning("vision summary request failed for %s: %s", fig_id, exc)
         return None
+
+
+def _resolve_vision_provider(raw_provider):
+    provider = str(raw_provider or "openai").strip().lower()
+    if provider in {"openai", "newapi"}:
+        return provider
+    return "openai"
+
+
+def _build_vision_payload(model, temperature, max_tokens, prompt, data_uri, provider, image_cfg):
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You summarize scientific figures conservatively and must not invent values.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            },
+        ],
+    }
+    if provider == "newapi":
+        payload["stream"] = False
+
+    extra_body = _parse_extra_body_json(image_cfg.get("extra_body_json", ""))
+    if extra_body:
+        payload.update(extra_body)
+    return payload
+
+
+def _parse_extra_body_json(raw_text):
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        logger.warning("image_summary.extra_body_json 不是合法 JSON，已忽略：%s", exc)
+        return {}
+
+    if not isinstance(data, dict):
+        logger.warning("image_summary.extra_body_json 必须是 JSON 对象，已忽略。")
+        return {}
+    return data
 
 
 def _build_vision_endpoints(base_url):
@@ -538,6 +700,110 @@ def _build_vision_endpoints(base_url):
         seen.add(ep)
         ordered.append(ep)
     return ordered
+
+
+def check_vision_connection(cfg):
+    """Verify vision model API is reachable and API key is valid.
+
+    Returns:
+        dict: {"connected": bool, "message": str}
+    """
+    image_cfg = cfg.get("image_summary", {})
+
+    if not _safe_bool(image_cfg.get("enabled"), True):
+        return {"connected": False, "message": "图摘要回写未启用"}
+
+    api_key = str(image_cfg.get("api_key") or "").strip()
+    if not api_key:
+        return {"connected": False, "message": "API Key 未配置"}
+    if re.fullmatch(r"\*{4,}.{4}", api_key):
+        return {"connected": False, "message": "API Key 显示为掩码值，请重新输入"}
+
+    model = str(image_cfg.get("model") or "").strip()
+    if not model:
+        return {"connected": False, "message": "模型名称未配置"}
+
+    base_url = str(image_cfg.get("api_base_url") or "https://api.openai.com/v1").strip()
+    use_system_proxy = _safe_bool(image_cfg.get("use_system_proxy"), True)
+
+    # Build /models endpoint from base_url
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    if re.search(r"/v\d+$", base):
+        models_url = f"{base}/models"
+    else:
+        models_url = f"{base}/v1/models"
+
+    try:
+        session = requests.Session()
+        session.trust_env = use_system_proxy
+        try:
+            resp = session.get(
+                models_url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
+        finally:
+            session.close()
+
+        if resp.status_code == 401:
+            return {"connected": False, "message": "API Key 无效 (HTTP 401)"}
+        if resp.status_code == 403:
+            return {"connected": False, "message": "API Key 权限不足 (HTTP 403)"}
+        if resp.status_code == 404:
+            return _check_vision_via_chat(image_cfg, api_key, model, base_url, use_system_proxy)
+        if resp.status_code >= 400:
+            return {"connected": False, "message": f"服务异常 (HTTP {resp.status_code})"}
+        return {"connected": True, "message": f"视觉模型服务连通 (model={model})"}
+    except requests.Timeout:
+        return {"connected": False, "message": "连接超时 (10s)"}
+    except requests.ConnectionError:
+        return {"connected": False, "message": "网络连接失败"}
+    except requests.RequestException as exc:
+        return {"connected": False, "message": f"请求异常: {exc}"}
+
+
+def _check_vision_via_chat(image_cfg, api_key, model, base_url, use_system_proxy):
+    """Fallback: verify connectivity via a minimal chat completion (text-only, 1 token)."""
+    provider = _resolve_vision_provider(image_cfg.get("provider"))
+    endpoints = _build_vision_endpoints(base_url)
+
+    payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+    if provider == "newapi":
+        payload["stream"] = False
+
+    extra_body = _parse_extra_body_json(image_cfg.get("extra_body_json", ""))
+    if extra_body:
+        payload.update(extra_body)
+
+    session = requests.Session()
+    session.trust_env = use_system_proxy
+    last_exc = None
+    try:
+        for endpoint in endpoints:
+            try:
+                resp = session.post(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=15,
+                )
+                if resp.status_code == 401:
+                    return {"connected": False, "message": "API Key 无效 (HTTP 401)"}
+                if resp.status_code == 403:
+                    return {"connected": False, "message": "API Key 权限不足 (HTTP 403)"}
+                if resp.status_code >= 500:
+                    last_exc = RuntimeError(f"服务端错误 (HTTP {resp.status_code})")
+                    continue
+                return {"connected": True, "message": f"视觉模型服务连通 (model={model})"}
+            except requests.RequestException as exc:
+                last_exc = exc
+    finally:
+        session.close()
+
+    msg = f"所有端点均不可达: {last_exc}" if last_exc else "无可用端点"
+    return {"connected": False, "message": msg}
 
 
 def _parse_json_response(resp):
@@ -979,3 +1245,11 @@ def _safe_float(value, default_value):
         return float(value)
     except (TypeError, ValueError):
         return float(default_value)
+
+
+def _safe_bool(value, default_value):
+    if value is None:
+        return bool(default_value)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")

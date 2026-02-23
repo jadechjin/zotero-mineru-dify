@@ -1,5 +1,12 @@
 /* config.js — Configuration view logic */
 
+const _HEALTH_CHECK_MAP = {
+    'zotero': { label: '测试 Zotero 连接', method: () => Api.checkZotero() },
+    'mineru': { label: '测试 MinerU 连接', method: () => Api.checkMinerU() },
+    'dify': { label: '测试 Dify 连接', method: () => Api.checkDify() },
+    'image_summary': { label: '测试视觉模型连接', method: () => Api.checkImageSummary() },
+};
+
 const Config = {
     _schema: null,
     _categoryLabels: {},
@@ -68,6 +75,46 @@ const Config = {
             const form = document.createElement('div');
             form.className = 'config-category-form' + (cat === this._activeCategory ? ' active' : '');
             form.dataset.category = cat;
+
+            // Add connectivity test button for service categories
+            const hc = _HEALTH_CHECK_MAP[cat];
+            if (hc) {
+                const testRow = document.createElement('div');
+                testRow.className = 'd-flex align-items-center gap-2 mb-3 pb-2 border-bottom';
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-outline-info btn-sm';
+                btn.textContent = hc.label;
+
+                const statusEl = document.createElement('span');
+                statusEl.className = 'text-muted small';
+                statusEl.textContent = '(测试使用已保存的配置)';
+
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    statusEl.textContent = '检查中...';
+                    statusEl.className = 'text-muted small';
+                    try {
+                        const resp = await hc.method();
+                        const connected = resp.connected;
+                        const message = resp.message || (connected ? '已连接' : '未连接');
+                        statusEl.textContent = message;
+                        statusEl.className = connected ? 'text-success small' : 'text-danger small';
+                        Utils.showToast(message, connected ? 'success' : 'error');
+                    } catch (err) {
+                        statusEl.textContent = '错误: ' + err.message;
+                        statusEl.className = 'text-danger small';
+                        Utils.showToast('连接测试失败: ' + err.message, 'error');
+                    } finally {
+                        btn.disabled = false;
+                    }
+                });
+
+                testRow.appendChild(btn);
+                testRow.appendChild(statusEl);
+                form.appendChild(testRow);
+            }
 
             for (const [key, spec] of Object.entries(fields)) {
                 const value = (this._currentData[cat] || {})[key];

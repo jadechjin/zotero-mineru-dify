@@ -19,14 +19,58 @@ RAG_PIPELINE_MODE = "rag_pipeline"
 _SHARED_REF_PATTERN = re.compile(r"\{\{#rag\.shared\.([A-Za-z0-9_]+)#\}\}")
 _DOC_NAME_ITEM_KEY_PATTERN = re.compile(r"^\[([^\]]+)\]\s")
 
-POLL_INTERVAL_DIFY = 10
-
 
 def _headers(api_key, content_type="application/json"):
     headers = {"Authorization": f"Bearer {api_key}"}
     if content_type:
         headers["Content-Type"] = content_type
     return headers
+
+
+_MASKED_KEY_RE = re.compile(r"^\*{4,}.{4}$")
+
+
+def check_connection(cfg):
+    """Verify Dify API is reachable and API key is valid.
+
+    Returns:
+        dict: {"connected": bool, "message": str}
+    """
+    dify_cfg = cfg.get("dify", {})
+    base_url = (dify_cfg.get("base_url") or "").strip()
+    api_key = (dify_cfg.get("api_key") or "").strip()
+
+    if not base_url:
+        return {"connected": False, "message": "Base URL 未配置"}
+    if not api_key:
+        return {"connected": False, "message": "API Key 未配置"}
+    if _MASKED_KEY_RE.fullmatch(api_key):
+        return {"connected": False, "message": "API Key 显示为掩码值，请重新输入"}
+
+    try:
+        resp = requests.get(
+            f"{base_url}/datasets",
+            headers=_headers(api_key, content_type=None),
+            params={"page": 1, "limit": 1},
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            return {"connected": False, "message": "API Key 无效 (HTTP 401)"}
+        if resp.status_code == 403:
+            return {"connected": False, "message": "API Key 权限不足 (HTTP 403)"}
+        resp.raise_for_status()
+        body = resp.json()
+        has_data = len(body.get("data", [])) > 0 or body.get("has_more", False)
+        hint = "（已有知识库）" if has_data else "（知识库为空）"
+        return {"connected": True, "message": f"Dify 服务连通 {hint}"}
+    except requests.Timeout:
+        return {"connected": False, "message": "连接超时 (10s)"}
+    except requests.ConnectionError:
+        return {"connected": False, "message": "网络连接失败"}
+    except requests.RequestException as exc:
+        return {"connected": False, "message": f"请求异常: {exc}"}
+    except (ValueError, KeyError) as exc:
+        return {"connected": False, "message": f"响应解析异常: {exc}"}
 
 
 def _parse_int(value):
@@ -326,6 +370,7 @@ def get_dataset_document_name_index(cfg, dataset_id):
 
     names = set()
     prefixed_item_keys = set()
+    skipped_unhealthy = 0
     total = None
     page = 1
 
@@ -355,6 +400,14 @@ def get_dataset_document_name_index(cfg, dataset_id):
                 name = (doc.get("name") or "").strip()
                 if not name:
                     continue
+
+                # Skip documents that failed indexing or are disabled
+                indexing_status = (doc.get("indexing_status") or "").strip().lower()
+                enabled = doc.get("enabled", True)
+                if indexing_status == "error" or not enabled:
+                    skipped_unhealthy += 1
+                    continue
+
                 names.add(name)
                 matched = _DOC_NAME_ITEM_KEY_PATTERN.match(name)
                 if matched:
@@ -366,10 +419,17 @@ def get_dataset_document_name_index(cfg, dataset_id):
     except Exception as exc:
         logger.warning("拉取知识库文档名索引失败（%s）：%s", dataset_id, exc)
 
+    if skipped_unhealthy:
+        logger.info(
+            "文档名索引：跳过 %d 个不健康文档（error/disabled），将重新处理",
+            skipped_unhealthy,
+        )
+
     return {
         "total": total,
         "names": names,
         "prefixed_item_keys": prefixed_item_keys,
+        "skipped_unhealthy": skipped_unhealthy,
     }
 
 
@@ -559,102 +619,6 @@ def upload_document(cfg, dataset_id, item_key, file_name, md_text, doc_form="", 
         return None
 
 
-def wait_for_indexing(cfg, dataset_id, batch, max_wait=None):
-    """轮询 Dify 索引状态，直到完成/失败/超时。"""
-    dify_cfg = cfg.get("dify", {})
-    base_url = dify_cfg.get("base_url", "")
-    api_key = dify_cfg.get("api_key", "")
-    index_max_wait = dify_cfg.get("index_max_wait_s", 1800)
-
-    if not batch:
-        return False
-
-    if max_wait is None or max_wait <= 0:
-        max_wait = index_max_wait
-
-    def _fetch_docs():
-        resp = requests.get(
-            f"{base_url}/datasets/{dataset_id}/documents/{batch}/indexing-status",
-            headers=_headers(api_key, content_type=None),
-            timeout=30,
-        )
-        resp.raise_for_status()
-        docs = resp.json().get("data", [])
-        return docs if isinstance(docs, list) else []
-
-    def _doc_error_text(doc):
-        err = doc.get("error")
-        if err in (None, "", {}, []):
-            return ""
-        if isinstance(err, str):
-            return err.strip()
-        return str(err).strip()
-
-    def _validate_completed_docs(docs):
-        for d in docs:
-            doc_id = d.get("id", "unknown")
-            err_text = _doc_error_text(d)
-            if err_text:
-                return False, f"doc={doc_id} error={err_text}"
-
-            total_segments = int(d.get("total_segments") or 0)
-            completed_segments = int(d.get("completed_segments") or 0)
-            if total_segments <= 0:
-                return False, f"doc={doc_id} total_segments={total_segments}"
-            if completed_segments < total_segments:
-                return (
-                    False,
-                    f"doc={doc_id} completed_segments={completed_segments} total_segments={total_segments}",
-                )
-
-        return True, ""
-
-    start = time.time()
-    while time.time() - start < max_wait:
-        try:
-            docs = _fetch_docs()
-            if not docs:
-                time.sleep(POLL_INTERVAL_DIFY)
-                continue
-
-            if any(d.get("indexing_status") == "error" for d in docs):
-                logger.error("索引失败，batch=%s", batch)
-                return False
-
-            if all(d.get("indexing_status") == "completed" for d in docs):
-                ok, reason = _validate_completed_docs(docs)
-                if not ok:
-                    logger.error("索引完成但存在异常，batch=%s，%s", batch, reason)
-                    return False
-                return True
-
-        except Exception as exc:
-            logger.warning("查询索引状态失败: %s", exc)
-
-        time.sleep(POLL_INTERVAL_DIFY)
-
-    logger.warning(
-        "索引超时，batch=%s，已等待 %ss（可通过配置 index_max_wait_s 调整）",
-        batch,
-        max_wait,
-    )
-
-    try:
-        docs = _fetch_docs()
-        if docs and all(d.get("indexing_status") == "completed" for d in docs):
-            ok, reason = _validate_completed_docs(docs)
-            if ok:
-                total_segments = sum(int(d.get("total_segments") or 0) for d in docs)
-                logger.warning("超时后复查发现已完成，batch=%s，segments=%d", batch, total_segments)
-                return True
-            logger.error("索引超时后复查仍异常，batch=%s，%s", batch, reason)
-    except Exception as exc:
-        logger.warning("索引超时后复查失败: %s", exc)
-
-    return False
-
-
-
 
 def _emit_upload_progress(progress_callback, **payload):
     """Best-effort callback dispatch for upload/index progress events."""
@@ -669,12 +633,10 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None, progress_callback
     """上传全部 Markdown 文本到 Dify。"""
     dify_cfg = cfg.get("dify", {})
     upload_delay = dify_cfg.get("upload_delay", 1)
-    index_max_wait = dify_cfg.get("index_max_wait_s", 1800)
     configured_doc_form = (dify_cfg.get("doc_form") or "").strip()
 
     uploaded = []
     failed = []
-    pending_batches = {}
 
     info = dataset_info or get_dataset_info(cfg, dataset_id)
     dataset_doc_form = info.get("doc_form", "")
@@ -690,7 +652,7 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None, progress_callback
 
     if effective_doc_form == HIERARCHICAL_FORM:
         logger.warning(
-            "当前知识库 doc_form=hierarchical_model。将继续上传 Markdown，并由索引结果判定成功/失败。"
+            "当前知识库 doc_form=hierarchical_model。将继续上传 Markdown。"
         )
 
     for item_key, data in md_results.items():
@@ -704,7 +666,7 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None, progress_callback
             runtime_mode=dataset_runtime_mode,
         )
         if batch:
-            pending_batches[item_key] = batch
+            uploaded.append(item_key)
             _emit_upload_progress(
                 progress_callback,
                 phase="submit_ok",
@@ -725,42 +687,6 @@ def upload_all(cfg, dataset_id, md_results, dataset_info=None, progress_callback
             )
         time.sleep(upload_delay)
 
-    logger.info("Dify submit: %d 接受, %d 拒绝", len(pending_batches), len(failed))
-    logger.info(
-        "等待 %d 个批次完成索引（单批最大等待 %ss）...",
-        len(pending_batches),
-        index_max_wait,
-    )
-    _emit_upload_progress(
-        progress_callback,
-        phase="index_wait_begin",
-        item_key="",
-        batch="",
-        success=True,
-        message=f"Waiting Dify indexing for {len(pending_batches)} file(s)",
-    )
-
-    for item_key, batch in pending_batches.items():
-        if wait_for_indexing(cfg, dataset_id, batch):
-            uploaded.append(item_key)
-            _emit_upload_progress(
-                progress_callback,
-                phase="index_ok",
-                item_key=item_key,
-                batch=batch,
-                success=True,
-                message=f"Dify indexing completed: {item_key}",
-            )
-        else:
-            failed.append(item_key)
-            logger.error("dify indexing failed: item=%s, batch=%s", item_key, batch)
-            _emit_upload_progress(
-                progress_callback,
-                phase="index_failed",
-                item_key=item_key,
-                batch=batch,
-                success=False,
-                message=f"Dify indexing failed: {item_key}",
-            )
+    logger.info("Dify submit: %d 接受, %d 拒绝", len(uploaded), len(failed))
 
     return uploaded, failed

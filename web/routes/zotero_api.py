@@ -22,7 +22,8 @@ def zotero_health():
     try:
         from zotero_client import check_connection
         ok = check_connection(cfg)
-        return jsonify({"success": True, "connected": ok})
+        message = "Zotero MCP 服务连通" if ok else "Zotero MCP 连接失败"
+        return jsonify({"success": True, "connected": ok, "message": message})
     except Exception as exc:
         return error_response(f"连接检查失败: {exc}", 500)
 

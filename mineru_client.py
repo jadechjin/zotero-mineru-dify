@@ -39,6 +39,39 @@ def _validate_api_token(api_token):
     return token
 
 
+def check_connection(cfg):
+    """Verify MinerU API is reachable and token is valid.
+
+    Returns:
+        dict: {"connected": bool, "message": str}
+    """
+    try:
+        api_token = _validate_api_token(cfg.get("mineru", {}).get("api_token"))
+    except RuntimeError as exc:
+        return {"connected": False, "message": str(exc)}
+
+    try:
+        resp = requests.post(
+            f"{MINERU_BASE_URL}/file-urls/batch",
+            headers=_build_headers(api_token),
+            json={"files": [], "model_version": "vlm"},
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            return {"connected": False, "message": "API Token 无效 (HTTP 401)"}
+        if resp.status_code == 403:
+            return {"connected": False, "message": "API Token 权限不足 (HTTP 403)"}
+        if resp.status_code >= 400:
+            return {"connected": False, "message": f"服务异常 (HTTP {resp.status_code})"}
+        return {"connected": True, "message": "MinerU 服务连通"}
+    except requests.Timeout:
+        return {"connected": False, "message": "连接超时 (10s)"}
+    except requests.ConnectionError:
+        return {"connected": False, "message": "网络连接失败"}
+    except requests.RequestException as exc:
+        return {"connected": False, "message": f"请求异常: {exc}"}
+
+
 def _validate_file_size(file_path):
     """Raise ValueError if the file exceeds MinerU's size limit."""
     size = os.path.getsize(file_path)

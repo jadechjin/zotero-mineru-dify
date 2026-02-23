@@ -23,7 +23,6 @@ class Stage(str, Enum):
     MD_CLEAN = "md_clean"
     SMART_SPLIT = "smart_split"
     DIFY_UPLOAD = "dify_upload"
-    DIFY_INDEX = "dify_index"
     FINALIZE = "finalize"
 
 
@@ -109,11 +108,13 @@ class Task:
         total = len(self.files)
         succeeded = sum(1 for f in self.files if f.status == FileStatus.SUCCEEDED)
         failed = sum(1 for f in self.files if f.status == FileStatus.FAILED)
-        pending = total - succeeded - failed
+        skipped = sum(1 for f in self.files if f.status == FileStatus.SKIPPED)
+        pending = total - succeeded - failed - skipped
         stats = {
             "total": total,
             "succeeded": succeeded,
             "failed": failed,
+            "skipped": skipped,
             "pending": pending,
         }
         if isinstance(self.runtime_stats, dict) and self.runtime_stats:

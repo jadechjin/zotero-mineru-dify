@@ -1,55 +1,158 @@
 # Architecture Change Log
 
-## v2.3 — Dify Upload Flow Simplification (Planned)
+## Docs — Generated CONTRIB.md and RUNBOOK.md (2026-02-23)
 
 ### Summary
 
-Simplification of Dify upload pipeline to remove entry indexing polling. Files are considered complete upon successful submission to Dify, eliminating the `wait_for_indexing()` blocking phase. This streamlines the user experience by providing immediate upload confirmation without waiting for Dify's background indexing to complete.
+Generated `docs/CONTRIB.md` (development workflow, environment variables, API reference) and `docs/RUNBOOK.md` (deployment, monitoring, troubleshooting, rollback) from project data sources (`.env.example`, `requirements.txt`, `app.py`, `llmdoc/`).
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `docs/CONTRIB.md` | Developer contribution guide with full env var reference |
+| `docs/RUNBOOK.md` | Operations runbook with health checks and common fixes |
+
+---
+
+## v2.3 — Dify Upload Simplification + File-Level Skip + Unhealthy Doc Filter (2026-02-22/23)
+
+### v2.3.2 — Unhealthy Document Filter in Skip Logic (2026-02-23)
+
+#### Summary
+
+Fixed an overly aggressive skip logic in `dify_client.get_dataset_document_name_index()` that treated all documents in Dify as "uploaded" regardless of their health status. Documents with `indexing_status == "error"` or `enabled == false` are now excluded from the uploaded index, so that their corresponding Zotero items will be re-collected and re-processed on the next pipeline run.
+
+#### Rationale
+
+- **Problem**: When building the uploaded-document index, the function did not inspect `indexing_status` or `enabled` fields. Dify documents that had failed indexing (error) or were manually disabled were still counted as "already uploaded", causing the pipeline to skip those Zotero items permanently.
+- **Fix**: Added two guard conditions in the per-document loop. Documents failing either check are excluded from the `names` and `prefixed_item_keys` sets, and a new `skipped_unhealthy` counter tracks how many were excluded.
+- **Observability**: The pipeline runner now emits an `unhealthy_docs_skipped` event during `zotero_collect` so the frontend dashboard can display how many unhealthy docs were detected.
+
+#### Changes
+
+| File | Change |
+|------|--------|
+| `dify_client.py` | `get_dataset_document_name_index()`: added `indexing_status == "error"` check, `enabled == false` check, `skipped_unhealthy` counter, and new return field `skipped_unhealthy` |
+| `services/pipeline_runner.py` | `run_pipeline()` zotero_collect stage: reads `skipped_unhealthy` from remote name index and emits `unhealthy_docs_skipped` event when > 0 |
+
+#### Behavior Change
+
+| Before | After |
+|--------|-------|
+| All Dify documents (any status) counted as "uploaded" | Only documents with `indexing_status != "error"` AND `enabled == true` counted as "uploaded" |
+| Error/disabled docs permanently blocked re-processing | Error/disabled docs are re-collected and re-processed on next run |
+| No visibility into unhealthy doc count | Dashboard event log shows count of skipped unhealthy docs |
+
+#### Verified Outcomes
+
+- [OK-1] Documents with `indexing_status=error` are excluded from uploaded index
+- [OK-2] Documents with `enabled=false` are excluded from uploaded index
+- [OK-3] Healthy documents (`indexing_status != error` and `enabled == true`) are still correctly included
+- [OK-4] `skipped_unhealthy` count is returned and logged
+- [OK-5] Pipeline event log shows `unhealthy_docs_skipped` event when applicable
+- [OK-6] Re-running pipeline re-processes items whose Dify docs were in error/disabled state
+
+---
+
+### v2.3.1 — File-Level Skip (2026-02-23)
+
+#### Summary
+
+Added the ability to skip individual files during a running pipeline task. Users can click a "Skip" button on any non-terminal file in the dashboard, and the file (including its smart-split child parts) will be excluded from subsequent MD Clean and Dify Upload stages.
+
+#### Rationale
+
+- **Granular Control**: Users may want to exclude specific files mid-run (e.g., corrupted PDFs, irrelevant attachments) without cancelling the entire task
+- **Non-Blocking**: Skip is immediate; the pipeline thread checks the shared skip set at each stage boundary
+- **Consistent Pattern**: Follows the existing `cancel_task()` shared-flag pattern for thread-safe cross-thread communication
+
+#### Changes
+
+##### Backend Changes
+
+| File | Change |
+|------|--------|
+| `services/task_manager.py` | Added `_skip_files: dict[str, set[str]]` shared collection; new `skip_file(task_id, filename)` method that marks `FileState.status = SKIPPED` and adds filename to the skip set |
+| `models/task_models.py` | `summary()` now includes `skipped` count in stats; `pending` calculation subtracts skipped files |
+| `web/routes/tasks_api.py` | New endpoint `POST /tasks/<task_id>/files/<filename>/skip` |
+| `services/pipeline_runner.py` | `run_pipeline` signature extended with `skip_files: set` parameter; filters skipped files before MD Clean stage; filters skipped files (including split child parts via `_resolve_parent_task_key`) before Dify Upload stage; `_on_dify_progress` ignores events for skipped files |
+
+##### Frontend Changes
+
+| File | Change |
+|------|--------|
+| `static/js/api.js` | New method `skipFile(taskId, filename)` calling `POST /tasks/{id}/files/{filename}/skip` |
+| `static/js/dashboard.js` | File cards show "Skip" button for running tasks with non-terminal file status; `_taskRunning` state tracking; `skipFile()` async method |
+| `templates/index.html` | Stats cards expanded from 3 columns (`col-md-4`) to 4 columns (`col-md-3`); new "Skipped" stat card |
+
+##### Thread Safety
+
+- `_skip_files` set is written by the API thread (via `skip_file()`) and read by the pipeline thread (at stage boundaries)
+- Thread safety is guaranteed by CPython GIL for `set.add()` and `in` operations
+- Follows the same pattern as `_cancel_flags` (`threading.Event`)
+
+#### Verified Outcomes
+
+- [OK-1] Skip button appears only for running tasks on non-terminal files (pending/processing)
+- [OK-2] Skipped files are immediately marked SKIPPED in the file list
+- [OK-3] Skipped files are excluded from MD Clean processing
+- [OK-4] Skipped files and their split child parts are excluded from Dify Upload
+- [OK-5] Stats card shows correct skipped count
+- [OK-6] Pipeline correctly handles edge case where all remaining files are skipped
+- [OK-7] Dify progress callback ignores events for skipped files
+
+---
+
+### v2.3.0 — Dify Upload Flow Simplification (2026-02-22)
+
+### Summary
+
+Simplification of Dify upload pipeline to remove entry indexing polling. Files are considered complete upon successful submission to Dify, eliminating the `wait_for_indexing()` blocking phase. This streamlines the user experience by providing immediate upload confirmation without waiting for Dify's background indexing to complete. `progress.json` persistence has been removed; skip logic now compares against the Dify remote dataset directly.
 
 ### Rationale
 
 - **User Intent**: Users want immediate feedback after file upload succeeds, not to wait for indexing
-- **Progress Semantics**: `progress["processed"]` changes from "indexed in Dify" to "uploaded to Dify"
-- **Pipeline Simplification**: Removes `dify_index` stage or converts it to no-op; pipeline terminates after `dify_upload`
+- **Skip Logic**: Re-run deduplication is now driven by live Dify remote state (`uploaded_item_keys`) instead of a local progress file
+- **Pipeline Simplification**: `Stage.DIFY_INDEX` removed from the Stage enum; pipeline terminates after `dify_upload` then `finalize`
 
-### Planned Changes
+### Changes
 
 #### Backend Changes
 
 | File | Change |
 |------|--------|
-| `dify_client.py` | Remove `wait_for_indexing()` call from `upload_all()` |
-| `services/pipeline_runner.py` | Remove/simplify `dify_index` stage; update progress callbacks to remove `index_*` events |
-| `models/task_models.py` | Decide on `Stage.DIFY_INDEX` retention (keep as no-op or remove) |
+| `dify_client.py` | Removed `wait_for_indexing()` function and `POLL_INTERVAL_DIFY` constant; `upload_all()` now returns `uploaded` (submit_ok keys) and `failed` (submit_failed keys) immediately |
+| `models/task_models.py` | Removed `Stage.DIFY_INDEX` from Stage enum; new enum: `INIT, ZOTERO_COLLECT, MINERU_UPLOAD, MINERU_POLL, MD_CLEAN, SMART_SPLIT, DIFY_UPLOAD, FINALIZE` |
+| `zotero_client.py` | `collect_files()` signature changed: `progress_processed=None, target_dataset=None` replaced by `uploaded_item_keys=None` (`set[str]`); skips items already present in Dify remote dataset |
+| `progress.py` | **Deleted** — progress.json persistence no longer used |
+| `services/pipeline_runner.py` | Removed all progress.json read/write calls; removed three progress coordination helper functions; removed `index_*` event branches from `_on_dify_progress`; `collect_files` call updated to new signature; `finalize` stage logs Dify console hint |
+| `services/config_schema.py` | Removed `index_max_wait_s` field definition and its ENV_KEY_MAP entry |
 
 #### Frontend Changes
 
 | File | Change |
 |------|--------|
-| `static/js/dashboard.js` | Remove `dify_index` from stepper; remove index-related progress hints |
-| `templates/index.html` | Remove `dify_index` step from stepper UI |
+| `static/js/dashboard.js` | Removed `dify_index` stage from stepper and all index-related progress hints |
+| `templates/index.html` | Removed `dify_index` step from stepper UI |
 
 #### Documentation Updates
 
 | File | Change |
 |------|--------|
-| `llmdoc/architecture/system.md` | Update pipeline stages flow diagram; update Data Flow section |
-| `llmdoc/reference/api-endpoints.md` | Update Stage enum documentation |
+| `llmdoc/architecture/system.md` | Updated pipeline stages flow diagram; updated Data Flow section; removed `progress.py` from module dependency graph; updated skip logic description |
+| `llmdoc/reference/api-endpoints.md` | Removed `dify_index` from Stage enum; updated file status example |
+| `llmdoc/reference/config-schema.md` | Removed `index_max_wait_s` field; updated ENV_KEY_MAP count |
 
-### Success Criteria
+### Verified Outcomes
 
 - [OK-1] File upload to Dify (submit_ok) immediately shows success status on frontend without waiting for indexing
 - [OK-2] Failed uploads (submit_failed) immediately show failure status with reason
 - [OK-3] All files upload completion triggers finalize and task ends without blocking on indexing
-- [OK-4] `progress.json` `processed` field records timestamp upon upload success (not indexing completion)
 - [OK-5] Frontend stepper no longer displays `dify_index` step
-- [OK-6] Re-running pipeline correctly skips already uploaded files
+- [OK-6] Re-running pipeline correctly skips already uploaded files via Dify remote comparison
 - [OK-7] Partial upload failures result in `partial_succeeded` status; failed files can retry on next run
 - [OK-8] Pipeline end event log includes hint: "Files submitted to Dify. Check indexing status in Dify console"
-
-### Research Reference
-
-Team research document: `.claude/team-plan/dify-upload-ux-research.md`
 
 ---
 

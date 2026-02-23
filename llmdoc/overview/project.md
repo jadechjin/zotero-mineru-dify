@@ -12,7 +12,7 @@ Zotero-MinerU-Dify Pipeline 是一个文献知识库自动化工具，将 Zotero
 | Frontend | Vanilla JS + Bootstrap 5 CDN | SPA, no build step |
 | Background Tasks | threading.Thread | 1 concurrent task max |
 | Config Storage | JSON file | Atomic write (tmp -> os.replace) |
-| Progress Tracking | JSON file (progress.json) | Idempotent re-runs |
+| Skip Logic | Dify remote dataset comparison | Idempotent re-runs |
 | External APIs | Zotero MCP, MinerU REST, Dify REST | |
 | NLP | jieba (Chinese), NLTK (English) | Sentence boundary detection |
 

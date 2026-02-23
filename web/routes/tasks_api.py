@@ -89,3 +89,15 @@ def cancel_task(task_id):
     if not ok:
         return error_response("无法取消（任务不存在或已结束）", 409)
     return jsonify({"success": True, "message": "任务已取消"})
+
+
+@tasks_bp.route("/tasks/<task_id>/files/<path:filename>/skip", methods=["POST"])
+def skip_file(task_id, filename):
+    """跳过指定文件的后续处理。"""
+    task = _task_manager.get_task(task_id)
+    if task is None:
+        return not_found("任务不存在")
+    result = _task_manager.skip_file(task_id, filename)
+    if not result["ok"]:
+        return error_response(result["reason"], 409)
+    return jsonify({"success": True, "message": f"文件已标记为跳过: {filename}"})

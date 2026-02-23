@@ -5,8 +5,6 @@ from collections import deque
 
 import requests
 
-from progress import is_processed
-
 logger = logging.getLogger(__name__)
 
 SUPPORTED_FORMATS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg"}
@@ -294,29 +292,27 @@ def get_attachment_paths(mcp_url, item_key):
 
 def collect_files(
     cfg,
-    progress_processed=None,
+    uploaded_item_keys=None,
     collection_keys=None,
     recursive=True,
     page_size=50,
-    target_dataset=None,
 ):
     """Collect all valid attachment paths, deduplicated and filtered.
 
     Args:
         cfg: configuration dict with cfg["zotero"]["mcp_url"].
-        progress_processed: dict of already-processed task keys.
+        uploaded_item_keys: set of Zotero item base keys already present in Dify.
         collection_keys: list of collection keys to filter by, or None for all.
         recursive: whether to include subcollection items (default True).
         page_size: pagination size for item queries.
-        target_dataset: 目标知识库 ID。仅在该知识库已处理过的文件才跳过。
 
     Returns:
         dict: {file_path: task_key} where task_key = "item_key#index"
     """
     mcp_url = cfg["zotero"]["mcp_url"]
 
-    if progress_processed is None:
-        progress_processed = {}
+    if uploaded_item_keys is None:
+        uploaded_item_keys = set()
 
     if collection_keys:
         items = collect_items_by_collections(mcp_url, collection_keys, recursive=recursive, page_size=page_size)
@@ -332,12 +328,7 @@ def collect_files(
             logger.warning("跳过 key 为空的条目")
             continue
 
-        if is_processed(
-            progress_processed,
-            item_key,
-            item_key,
-            target_dataset=target_dataset,
-        ):
+        if item_key in uploaded_item_keys:
             skipped_processed += 1
             continue
 
@@ -351,14 +342,6 @@ def collect_files(
 
         for idx, p in enumerate(paths):
             task_key = f"{item_key}#{idx}"
-            if is_processed(
-                progress_processed,
-                item_key,
-                task_key,
-                target_dataset=target_dataset,
-            ):
-                skipped_processed += 1
-                continue
             if p not in seen_paths:
                 seen_paths.add(p)
                 file_map[p] = task_key

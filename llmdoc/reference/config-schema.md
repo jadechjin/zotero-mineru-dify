@@ -38,7 +38,6 @@ Source: `services/config_schema.py`
 | subchunk_overlap | int [0-500] | `0` | No | 子段重叠 |
 | remove_extra_spaces | bool | `true` | No | 去除多余空格 |
 | remove_urls_emails | bool | `false` | No | 去除 URL/邮箱 |
-| index_max_wait_s | int [60-7200] | `1800` | No | 索引等待上限（秒） |
 | doc_form | str | `""` | No | 文档形式 |
 | doc_language | str | `""` | No | 文档语言 |
 | upload_delay | int [0-30] | `1` | No | 上传间隔（秒） |
@@ -55,6 +54,24 @@ Source: `services/config_schema.py`
 | remove_page_numbers | bool | `false` | No | 移除页码 |
 | remove_watermark | bool | `false` | No | 移除水印 |
 | watermark_patterns | str | `""` | No | 水印正则（逗号分隔） |
+
+### image_summary
+
+| Key | Type | Default | Sensitive | Label |
+|-----|------|---------|-----------|-------|
+| enabled | bool | `true` | No | 启用图摘要回写 |
+| provider | select [openai, newapi] | `openai` | No | 视觉 API 提供方 |
+| api_base_url | str | `https://api.openai.com/v1` | No | 视觉模型 API Base URL |
+| api_key | str | `""` | Yes | 视觉模型 API Key |
+| model | str | `gpt-4.1-mini` | No | 视觉模型名称 |
+| use_system_proxy | bool | `true` | No | 遵循系统代理设置 |
+| extra_body_json | str | `""` | No | 扩展请求参数(JSON) |
+| concurrency | int [1-32] | `4` | No | 图片解析并发数 |
+| request_timeout_s | int [10-600] | `120` | No | 请求超时（秒） |
+| max_context_chars | int [500-20000] | `3000` | No | 单图上下文最大字符 |
+| max_images_per_doc | int [0-500] | `50` | No | 单文档最多处理图片数 |
+| max_tokens | int [128-4000] | `900` | No | 视觉模型输出 Token 上限 |
+| temperature | float [0-2] | `0.1` | No | 视觉模型温度 |
 
 ### smart_split
 
@@ -77,4 +94,4 @@ Source: `services/config_schema.py`
 
 ## ENV_KEY_MAP
 
-Maps 32 `.env` variable names to `(category, key)` tuples. Full list in `services/config_schema.py:70-103`.
+Maps 35 `.env` variable names to `(category, key)` tuples. Full list in `services/config_schema.py`.
